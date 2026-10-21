@@ -6,6 +6,19 @@ Versions from 1.0.0 up are on npm. Everything below 1.0.0 was released from the 
 
 ## [Unreleased]
 
+### Added
+
+- Settings → Oh My Claude → "Suggested next prompt": after each reply, Claude's own guess at your next prompt appears above the composer with Use, which writes it into the box, and Send, which sends it as it is; it folds away while you type something else and comes back if you clear the box. On by default, as in the Claude Code terminal, and the switch turns it off; it costs one small model call per turn, nearly all of it cache reads, and the CLI sends a guess only when it has one it trusts.
+- Claude's background tasks and subagents are listed on the panel's Tasks tab while they run, each with Stop; a shell or Monitor task also has Output, the last 8 KiB it wrote.
+- A subagent's row in the chat shows each step the CLI reports for it ("Running Count lines in src/process.ts"), not only the tool name, plus the CLI's own one-line progress summary when it writes one, while the turn that started the subagent runs.
+- When Claude Code is billing an `ANTHROPIC_API_KEY` from dsh's environment instead of your login, the session says so in one line at its start.
+
+### Fixed
+
+- Claude's multiple-choice questions keep the preview text of each option (a mockup, a snippet), shown under the question. It was dropped before.
+- The panel's Restore tab no longer shows the previous workspace's transcripts for a moment after a switch to a new session in another workspace.
+- A slash command typed in the composer takes the plugin's accent again on dsh 0.2.1-rc.2, which draws it as a chip of its own; it had gone back to dsh's blue.
+
 ## [1.5.4] - 2026-10-19
 
 dsh: runs on 0.2.0-rc.1 through 0.2.1-rc.2; built and tested on 0.2.1-rc.2.

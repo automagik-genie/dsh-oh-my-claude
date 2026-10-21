@@ -19,7 +19,7 @@ import { type HealHost } from "./session-heal.js";
 import type { RewindResult } from "./process.js";
 export { markBusy, takeInterrupted } from "./state.js";
 export { forkTranscriptText } from "./transcript.js";
-import { Translator, type FallbackRecord, type LiveMode } from "./translator.js";
+import { Translator, type FallbackRecord, type LiveMode, type SuggestionRow, type LiveTask, type LiveTaskPatch } from "./translator.js";
 export { Translator, type TranslatorBlock, type FallbackRecord } from "./translator.js";
 import type { FinishReason, Message } from "@deepseek-ai/dsh-llm";
 import type { ClaudeProcessSpec, RelayEvent, RelayResult, TurnPrep } from "./process.js";
@@ -404,6 +404,9 @@ export interface AsidesReply {
     loginNeeded: LoginNeed | null;
     fallback: FallbackRecord | null;
     steers: SteerCardState;
+    /** The CLI's guess at the next prompt, or null: none yet, the process is gone, or a prompt went
+     *  out since. */
+    suggestion: SuggestionRow | null;
 }
 /** `GET /idle` and the `idle` event: when the idle watchdog would end the process, or null. */
 export interface IdleReply {
@@ -1238,6 +1241,11 @@ export declare class ClaudeCodeAdapter extends LlmAdapter {
      *  the next spawn's init frame, never on a reload.
      *  ponytail: one entry per live session, dropped by `forgetSession` when its process goes. */
     readonly sessionPluginWarnings: Map<string, PluginLoadError[]>;
+    /** Claude's own live tasks per dsh session (task id → row), from the translator's task frames;
+     *  a terminal status removes the row, `forgetSession` and a process exit drop the map. A task
+     *  that ends while no turn is reading stays until the next turn drains the queue; Stop on it
+     *  then shows the CLI's error. */
+    readonly sessionTasks: Map<string, Map<string, LiveTask>>;
     /** dsh session id → the model switch its last turn reported (a safety refusal, a primary-model
      *  fallback, or the usage-credit gate), surfaced through `/side-questions` like `loginNeeded`. One
      *  entry per live session, overwritten on each switch; the client reads it at the stop transition.
@@ -1443,6 +1451,26 @@ export declare class ClaudeCodeAdapter extends LlmAdapter {
         live: boolean;
         error?: string;
     }>;
+    /** One task frame into the session's live list (`applyTaskPatch` holds the rules); the map is
+     *  created on the first frame so a session with no tasks owns no entry. */
+    noteTask(sessionId: string, taskId: string, patch: LiveTaskPatch): void;
+    /** The session's live tasks, oldest first, for the Tasks tab. Empty without a process. */
+    liveTasksFor(sessionId: string): LiveTask[];
+    /** Ask the CLI to stop one task. The reply is the CLI's: an error for a task it no longer has.
+     *  On success the row goes at once: the `killed` and `stopped` frames that follow reach the
+     *  translator only inside a turn, and a Stop clicked between turns would otherwise show a row
+     *  the CLI has already ended until the next prompt. */
+    stopTask(sessionId: string, taskId: string): Promise<{
+        ok: boolean;
+        error?: string;
+    }>;
+    /** The tail of one background shell or Monitor task's output (the CLI caps it at 8 KiB). On a
+     *  subagent task the CLI answers an error, which is returned as the text. */
+    taskOutput(sessionId: string, taskId: string): Promise<{
+        ok: boolean;
+        output?: string;
+        error?: string;
+    }>;
     /** The plugin load errors this session's last init frame reported, for the panel. */
     pluginErrorsFor(sessionId: string): PluginLoadError[];
     /** The plugin warnings this session's last init frame reported, for the panel. */
@@ -1469,6 +1497,9 @@ export declare class ClaudeCodeAdapter extends LlmAdapter {
      *  session's owner, the waiting steers on whichever mount has its live process (the root when
      *  none is live, since a held steer sits on the mount that took it). */
     asidesReply(sessionId: string, touch?: boolean): AsidesReply;
+    /** The next prompt the CLI predicted after this session's last turn, from the mount that runs
+     *  its process; null when there is none, the process is gone, or a prompt went out since. */
+    suggestionFor(sessionId: string): SuggestionRow | null;
     /** When the idle watchdog would end the session's process (null: not armed), from the mount
      *  that runs it, with the configured timeout so the tab can draw the countdown. */
     idleReply(sessionId: string): IdleReply;
@@ -1510,6 +1541,17 @@ export declare class ClaudeCodeAdapter extends LlmAdapter {
      *  (the command is synthetic, measured 2026-09-19 returning at 2.3 s with no model turn). Not a
      *  control request, and not `prepare`'s purpose branch, which forces a scratch cwd. */
     skillDoctor(sessionId: string): Promise<SkillDoctorReply>;
+    /** The SDK's `initialize` request, once per process this adapter starts or adopts: asks the CLI
+     *  to write a one-line progress summary into each subagent's `task_progress`, and, unless the
+     *  `promptSuggestionsOff` hint is set, to predict the next prompt after each turn
+     *  (`prompt_suggestion` frames, one small cached model call per turn). The reply (the command
+     *  catalog the init frame already carries) is not used; a failure is logged and the session
+     *  runs as before. Sent after the hints read, so the first prompt may go out first; probed both
+     *  orders on 2.1.304 (2026-10-20) and the CLI applies the preference either way, and again on a
+     *  second request. A slow boot can outlast the reply timeout and log a warning for a request the
+     *  CLI did apply; harmless. A suggestion still arrives only on the CLI's own terms (see
+     *  `ClaudeProcess.suggestion`). */
+    sendInitialize(proc: ClaudeProcess): Promise<void>;
     /** Ask the CLI how many tokens this session's context window holds, bank the figure for dsh's context ring under both the spec and CLI model names, and flag an assumed-behind window when this box runs behind a proxy. */
     contextUsage(sessionId: string): Promise<ContextUsageReply>;
     /**

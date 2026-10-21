@@ -377,8 +377,10 @@ const BENIGN_EVENTS = new Set([
 // stream_event sub-types with no renderable delta (SSE bookkeeping).
 const BENIGN_PARTIALS = new Set(["message_delta", "message_stop", "ping"]);
 
-/** Task statuses that end a task: after one of these no further frame arrives for that task_id. */
-const TASK_TERMINAL = new Set(["completed", "failed", "killed"]);
+/** Statuses after which a task is over: `task_updated` ends in `completed`, `failed` or `killed`,
+ *  `task_notification` in `completed`, `failed` or `stopped` (a Stop sends `killed` on the update
+ *  and `stopped` on the notification, probed 2026-10-20 on 2.1.304). Exported for the live list. */
+export const TASK_TERMINAL = new Set(["completed", "failed", "killed", "stopped"]);
 
 /** A background task's status word in the stored language; a status the CLI adds later shows as
  *  it sent it. */
@@ -495,6 +497,53 @@ export interface TurnProgress {
   mode?: LiveMode;
 }
 
+/** One of Claude's own background tasks or subagents, as the task frames describe it, for the
+ *  Tasks tab's Stop and Output buttons. `status` is the CLI's word (`running`, `paused`); a
+ *  terminal status removes the row. */
+export interface LiveTask {
+  id: string;
+  description: string;
+  backgrounded: boolean;
+  subagentType?: string;
+  status: string;
+  at: number;
+}
+/** What one task frame changes on a `LiveTask`; `task_started` sets everything, the rest a status. */
+export interface LiveTaskPatch {
+  description?: string;
+  backgrounded?: boolean;
+  subagentType?: string;
+  status: string;
+}
+/** Apply one task frame to a session's live list: a start inserts, a status updates, a terminal
+ *  status removes. A status for a task the map never saw is dropped (its start was read by a
+ *  process this adapter no longer has), and a start for a known id only moves its status. */
+export function applyTaskPatch(
+  tasks: Map<string, LiveTask>,
+  taskId: string,
+  patch: LiveTaskPatch,
+  now: number,
+): void {
+  const row = tasks.get(taskId);
+  if (TASK_TERMINAL.has(patch.status)) tasks.delete(taskId);
+  else if (row) row.status = patch.status;
+  else if (patch.description !== undefined)
+    tasks.set(taskId, {
+      id: taskId,
+      description: patch.description,
+      backgrounded: patch.backgrounded === true,
+      subagentType: patch.subagentType,
+      status: patch.status,
+      at: now,
+    });
+}
+
+/** The CLI's guess at the next prompt after a turn, as the composer card offers it. */
+export interface SuggestionRow {
+  text: string;
+  at: number;
+}
+
 /** A model switch the CLI reported mid-turn, surfaced to the notice and the picker. `direction` and
  *  `scope` come from `model_refusal_fallback`; `model_fallback` and `model_consent_fallback` leave
  *  them undefined. The client moves the picker only for a `model_refusal_fallback` that is `sticky`
@@ -557,7 +606,13 @@ export class Translator {
   /** task_id → { block, lastSummary, lastToolName } tracks open task blocks across progress frames. */
   readonly taskBlocks = new Map<
     string,
-    { block: TranslatorBlock; lastSummary?: string; lastToolName?: string; lastStatus?: string }
+    {
+      block: TranslatorBlock;
+      lastSummary?: string;
+      lastToolName?: string;
+      lastDescription?: string;
+      lastStatus?: string;
+    }
   >();
   /** tool_use_id → { block, nextAt } tracks the block a long-running call reports its elapsed
    *  time into, and the next elapsed mark worth a line. */
@@ -588,6 +643,12 @@ export class Translator {
    *  adapter banks it; the client fires a notice and moves the picker (only a sticky, session-scoped
    *  model_refusal_fallback). `sessionId` and `at` are added by the adapter. */
   onModel?: (rec: Omit<FallbackRecord, "sessionId" | "at">) => void;
+  /** Injected: asked once per init frame that names an environment API key; true draws the
+   *  billing line. The adapter answers true once per process. */
+  noteApiKey?: () => boolean;
+  /** Injected: every task frame with a task id, so the adapter can keep the live list the Tasks
+   *  tab reads. The reasoning rows above are drawn regardless; this is the second reader. */
+  onTask?: (taskId: string, patch: LiveTaskPatch) => void;
   /** Output tokens across every assistant message of this turn so far. A `message_delta` reports
    *  the message it closes, not the turn, so the figure summed here is what the status row shows;
    *  reporting each message's own count made the row drop back to a few hundred at every tool step. */
@@ -657,6 +718,8 @@ export class Translator {
     onInit,
     onProgress,
     onModel,
+    noteApiKey,
+    onTask,
     hostLabel,
     statusNote,
   }: {
@@ -680,6 +743,8 @@ export class Translator {
     ) => void;
     onProgress?: (progress: TurnProgress) => void;
     onModel?: (rec: Omit<FallbackRecord, "sessionId" | "at">) => void;
+    noteApiKey?: () => boolean;
+    onTask?: (taskId: string, patch: LiveTaskPatch) => void;
     /** The box a remote turn runs on, so a logged-out error names it, not this local host. */
     hostLabel?: string;
     /** What to append to a 5xx retry line from the Anthropic status page cache. */
@@ -715,6 +780,8 @@ export class Translator {
     this.onInit = onInit;
     this.onProgress = onProgress;
     this.onModel = onModel;
+    this.noteApiKey = noteApiKey;
+    this.onTask = onTask;
   }
 
   /** The delta chunk kind a block emits. Only a "text" block produces text-delta; any other block
@@ -808,6 +875,15 @@ export class Translator {
             pluginWarnings.length > 0
           )
             this.onInit?.(names, tools, pluginErrors, pluginWarnings);
+          // In -p mode an ANTHROPIC_API_KEY in the environment wins over the claude.ai login
+          // (probed 2026-10-20 on 2.1.304: the init frame names the source and the turn billed
+          // the key). dsh loads the launch folder's .env, so a key meant for another tool bills
+          // here unseen; one reasoning line per process says so. The init frame repeats with
+          // every user message, so the adapter's `noteApiKey` remembers the line on the process;
+          // with no hook (a bare translator) the line draws. `apiKeyHelper` is a setting someone
+          // chose and gets no line.
+          if (event.apiKeySource === "ANTHROPIC_API_KEY" && (this.noteApiKey?.() ?? true))
+            return this.wholeBlock("reasoning", serverText("apiKeyBilling"));
           return [];
         }
         if (event.subtype === "thinking_tokens") {
@@ -893,6 +969,12 @@ export class Translator {
           }
           const { block, events } = this.startBlock("reasoning", startLine);
           this.taskBlocks.set(taskId, { block, lastSummary: undefined, lastToolName: undefined });
+          this.onTask?.(taskId, {
+            description: event.description ?? taskId,
+            backgrounded: event.is_backgrounded === true,
+            subagentType: event.subagent_type,
+            status: "running",
+          });
           return events;
         }
         if (event.subtype === "task_progress") {
@@ -901,24 +983,35 @@ export class Translator {
           if (!entry) return [];
           const summary = (event.summary ?? "").trim();
           const toolName = event.last_tool_name ?? "";
+          // The CLI rewrites `description` per step ("Running Count lines in src/process.ts",
+          // probed 2026-10-21 on 2.1.306) while the tool name stays "Bash", so the step line is
+          // the one a reader follows; the model-written summary comes with the option on and
+          // only now and then. Each is drawn once per change.
+          const description = (event.description ?? "").trim();
           const summaryChanged = summary && summary !== entry.lastSummary;
           const toolNameChanged = toolName && toolName !== entry.lastToolName;
-          if (!summaryChanged && !toolNameChanged) return [];
+          const descriptionChanged =
+            description && description !== entry.lastDescription && description !== summary;
+          if (!summaryChanged && !toolNameChanged && !descriptionChanged) return [];
           const usage = event.usage ?? {};
           const input = usage.input_tokens ?? 0;
           const output = usage.output_tokens ?? 0;
-          let progressLine = "";
+          const lines: string[] = [];
           if (toolNameChanged) {
-            progressLine += `${clip(toolName)}`;
-            if (input > 0 || output > 0) progressLine += ` · ${input}→${output}t`;
+            let toolLine = clip(toolName);
+            if (input > 0 || output > 0) toolLine += ` · ${input}→${output}t`;
+            lines.push(toolLine);
             entry.lastToolName = toolName;
           }
+          if (descriptionChanged) {
+            lines.push(clip(description));
+            entry.lastDescription = description;
+          }
           if (summaryChanged) {
-            if (progressLine) progressLine += "\n";
-            progressLine += `${clip(summary)}`;
+            lines.push(clip(summary));
             entry.lastSummary = summary;
           }
-          return this.delta(entry.block, progressLine ? `\n${progressLine}` : "");
+          return this.delta(entry.block, `\n${lines.join("\n")}`);
         }
         if (event.subtype === "task_notification") {
           const taskId = event.task_id ?? "";
@@ -929,12 +1022,14 @@ export class Translator {
             detail: summary ? clip(summary) : taskId || "?",
           });
           if (!entry) {
+            if (taskId !== "") this.onTask?.(taskId, { status: event.status ?? "completed" });
             return this.wholeBlock("reasoning", completionLine);
           }
           const events: StreamChunk[] = [];
           events.push(...this.delta(entry.block, `\n${completionLine}`));
           events.push(...this.endBlock(entry.block));
           this.taskBlocks.delete(taskId);
+          this.onTask?.(taskId, { status: event.status ?? "completed" });
           return events;
         }
         // task_updated carries the transitions a notification never sends: a task that dies, is
@@ -944,6 +1039,9 @@ export class Translator {
           const entry = this.taskBlocks.get(event.task_id ?? "");
           const patch = event.patch ?? {};
           const status = typeof patch.status === "string" ? patch.status : "";
+          // Above the block guard: a background task outlives the turn that started it, the next
+          // turn's translator has no block for it, and its status is still the live list's.
+          if (status && event.task_id) this.onTask?.(event.task_id, { status });
           if (!entry || !status || status === entry.lastStatus) return [];
           entry.lastStatus = status;
           if (!TASK_TERMINAL.has(status)) {

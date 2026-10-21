@@ -103,6 +103,7 @@ import {
   readKeeperInfo,
   readKeeperSpec,
   spawnKeeper,
+  decodeTaskOutput,
 } from "./process.js";
 import type {
   Agent,
@@ -209,7 +210,15 @@ import { buildMirror } from "./claude-home.js";
 export { markBusy, takeInterrupted } from "./state.js";
 export { forkTranscriptText } from "./transcript.js";
 import { anthropicStatus, degradedNote, peekStatus } from "./anthropic-status.js";
-import { Translator, type FallbackRecord, type LiveMode } from "./translator.js";
+import {
+  Translator,
+  type FallbackRecord,
+  type LiveMode,
+  type SuggestionRow,
+  type LiveTask,
+  type LiveTaskPatch,
+  applyTaskPatch,
+} from "./translator.js";
 export { Translator, type TranslatorBlock, type FallbackRecord } from "./translator.js";
 import type {
   ContentBlockType,
@@ -719,6 +728,9 @@ export interface AsidesReply {
   loginNeeded: LoginNeed | null;
   fallback: FallbackRecord | null;
   steers: SteerCardState;
+  /** The CLI's guess at the next prompt, or null: none yet, the process is gone, or a prompt went
+   *  out since. */
+  suggestion: SuggestionRow | null;
 }
 /** `GET /idle` and the `idle` event: when the idle watchdog would end the process, or null. */
 export interface IdleReply {
@@ -3433,6 +3445,11 @@ export class ClaudeCodeAdapter extends LlmAdapter {
    *  the next spawn's init frame, never on a reload.
    *  ponytail: one entry per live session, dropped by `forgetSession` when its process goes. */
   readonly sessionPluginWarnings = new Map<string, PluginLoadError[]>();
+  /** Claude's own live tasks per dsh session (task id → row), from the translator's task frames;
+   *  a terminal status removes the row, `forgetSession` and a process exit drop the map. A task
+   *  that ends while no turn is reading stays until the next turn drains the queue; Stop on it
+   *  then shows the CLI's error. */
+  readonly sessionTasks = new Map<string, Map<string, LiveTask>>();
   /** dsh session id → the model switch its last turn reported (a safety refusal, a primary-model
    *  fallback, or the usage-credit gate), surfaced through `/side-questions` like `loginNeeded`. One
    *  entry per live session, overwritten on each switch; the client reads it at the stop transition.
@@ -4197,6 +4214,45 @@ export class ClaudeCodeAdapter extends LlmAdapter {
     return reply.ok ? { ok: true, live: true } : { ok: false, live: true, error: reply.error };
   }
 
+  /** One task frame into the session's live list (`applyTaskPatch` holds the rules); the map is
+   *  created on the first frame so a session with no tasks owns no entry. */
+  noteTask(sessionId: string, taskId: string, patch: LiveTaskPatch): void {
+    const tasks = this.sessionTasks.get(sessionId) ?? new Map<string, LiveTask>();
+    applyTaskPatch(tasks, taskId, patch, Date.now());
+    this.sessionTasks.set(sessionId, tasks);
+  }
+
+  /** The session's live tasks, oldest first, for the Tasks tab. Empty without a process. */
+  liveTasksFor(sessionId: string): LiveTask[] {
+    return [...(this.sessionTasks.get(sessionId)?.values() ?? [])].toSorted((a, b) => a.at - b.at);
+  }
+
+  /** Ask the CLI to stop one task. The reply is the CLI's: an error for a task it no longer has.
+   *  On success the row goes at once: the `killed` and `stopped` frames that follow reach the
+   *  translator only inside a turn, and a Stop clicked between turns would otherwise show a row
+   *  the CLI has already ended until the next prompt. */
+  async stopTask(sessionId: string, taskId: string): Promise<{ ok: boolean; error?: string }> {
+    const proc = this.processes.get(registryKey(this.providerId, sessionId));
+    if (!proc?.alive) return { ok: false, error: "no live Claude process for this session" };
+    const reply = await this.control(proc, { subtype: "stop_task", task_id: taskId }, 10_000);
+    if (!reply.ok) return { ok: false, error: reply.error };
+    this.noteTask(sessionId, taskId, { status: "stopped" });
+    return { ok: true };
+  }
+
+  /** The tail of one background shell or Monitor task's output (the CLI caps it at 8 KiB). On a
+   *  subagent task the CLI answers an error, which is returned as the text. */
+  async taskOutput(
+    sessionId: string,
+    taskId: string,
+  ): Promise<{ ok: boolean; output?: string; error?: string }> {
+    const proc = this.processes.get(registryKey(this.providerId, sessionId));
+    if (!proc?.alive) return { ok: false, error: "no live Claude process for this session" };
+    const reply = await this.control(proc, { subtype: "get_task_output", task_id: taskId }, 10_000);
+    if (!reply.ok) return { ok: false, error: reply.error };
+    return { ok: true, output: decodeTaskOutput(reply.response) };
+  }
+
   /** The plugin load errors this session's last init frame reported, for the panel. */
   pluginErrorsFor(sessionId: string): PluginLoadError[] {
     return this.sessionPluginErrors.get(sessionId) ?? [];
@@ -4290,7 +4346,15 @@ export class ClaudeCodeAdapter extends LlmAdapter {
       loginNeeded: o.loginNeeded.get(sessionId) ?? null,
       fallback: o.sessionFallbacks.get(sessionId) ?? null,
       steers: (this.ownerIfLive(sessionId) ?? this).steersFor(sessionId, touch),
+      suggestion: (this.ownerIfLive(sessionId) ?? this).suggestionFor(sessionId),
     };
+  }
+
+  /** The next prompt the CLI predicted after this session's last turn, from the mount that runs
+   *  its process; null when there is none, the process is gone, or a prompt went out since. */
+  suggestionFor(sessionId: string): SuggestionRow | null {
+    const proc = this.processes.get(registryKey(this.providerId, sessionId));
+    return proc?.alive && proc.suggestion ? proc.suggestion : null;
   }
 
   /** When the idle watchdog would end the session's process (null: not armed), from the mount
@@ -4463,6 +4527,38 @@ export class ClaudeCodeAdapter extends LlmAdapter {
       proc.kill();
     }
   }
+  /** The SDK's `initialize` request, once per process this adapter starts or adopts: asks the CLI
+   *  to write a one-line progress summary into each subagent's `task_progress`, and, unless the
+   *  `promptSuggestionsOff` hint is set, to predict the next prompt after each turn
+   *  (`prompt_suggestion` frames, one small cached model call per turn). The reply (the command
+   *  catalog the init frame already carries) is not used; a failure is logged and the session
+   *  runs as before. Sent after the hints read, so the first prompt may go out first; probed both
+   *  orders on 2.1.304 (2026-10-20) and the CLI applies the preference either way, and again on a
+   *  second request. A slow boot can outlast the reply timeout and log a warning for a request the
+   *  CLI did apply; harmless. A suggestion still arrives only on the CLI's own terms (see
+   *  `ClaudeProcess.suggestion`). */
+  async sendInitialize(proc: ClaudeProcess): Promise<void> {
+    try {
+      const hints = await readHints(join(this.stateDir, "hints.json"));
+      const request = {
+        subtype: "initialize",
+        agentProgressSummaries: true,
+        promptSuggestions: hints.promptSuggestionsOff !== true,
+      } satisfies Record<string, JsonValue>;
+      const reply = await this.control(proc, request, 15_000);
+      if (!reply.ok) this.log("warn", `initialize not applied: ${reply.error}`);
+      // Diagnostics beside the rest: whether the CLI took the request and what it was asked for,
+      // so a session that never shows a suggestion can be read back from resume.log.
+      void trace(
+        join(this.stateDir, "resume.log"),
+        `initialize ${proc.spec?.sessionId ?? "?"}: ${reply.ok ? "applied" : `refused (${reply.error})`}, suggestions ${request.promptSuggestions ? "on" : "off"}`,
+      );
+    } catch (error) {
+      // Called with `void`: a throw here would be an unhandled rejection, not a logged line.
+      this.log("warn", `initialize not applied: ${errorText(error)}`);
+    }
+  }
+
   /** Ask the CLI how many tokens this session's context window holds, bank the figure for dsh's context ring under both the spec and CLI model names, and flag an assumed-behind window when this box runs behind a proxy. */
   async contextUsage(sessionId: string): Promise<ContextUsageReply> {
     const proc = this.processes.get(registryKey(this.providerId, sessionId));
@@ -5104,14 +5200,27 @@ export class ClaudeCodeAdapter extends LlmAdapter {
         command: record.command,
         spawner: () => this.attachHold(run, record),
         onExit: (p) => {
-          if (this.processes.get(key2) === p) this.processes.delete(key2);
+          if (this.processes.get(key2) === p) {
+            this.processes.delete(key2);
+            this.sessionTasks.delete(sessionId);
+          }
         },
       });
       proc.key = specKey(record.procSpec);
       proc.resuming = true;
       this.carryTotals(proc, sessionId);
       proc.onIdleResult = () => this.wake(sessionId, proc);
+      proc.onSuggestion = () => {
+        void trace(
+          join(this.stateDir, "resume.log"),
+          `suggestion ${sessionId}: ${proc.suggestion?.text ?? ""}`,
+        );
+        this.publishAsides(sessionId);
+      };
       this.processes.set(key2, proc);
+      // Again on a reattach: the CLI re-applies the preference, and a keeper left by an older
+      // plugin never had one.
+      void this.sendInitialize(proc);
       await trace(
         join(this.stateDir, "resume.log"),
         `adopted hold ${record.name} for ${sessionId} on ${record.host} (offset ${record.offset})`,
@@ -5198,14 +5307,25 @@ export class ClaudeCodeAdapter extends LlmAdapter {
         command: spec.command,
         spawner: () => lazyHandle(attachKeeper(dir, 5000)),
         onExit: (p) => {
-          if (this.processes.get(key2) === p) this.processes.delete(key2);
+          if (this.processes.get(key2) === p) {
+            this.processes.delete(key2);
+            this.sessionTasks.delete(spec.sessionId);
+          }
         },
       });
       proc.key = specKey(procSpec);
       proc.resuming = true;
       this.carryTotals(proc, spec.sessionId);
       proc.onIdleResult = () => this.wake(spec.sessionId, proc);
+      proc.onSuggestion = () => {
+        void trace(
+          join(this.stateDir, "resume.log"),
+          `suggestion ${spec.sessionId}: ${proc.suggestion?.text ?? ""}`,
+        );
+        this.publishAsides(spec.sessionId);
+      };
       this.processes.set(key2, proc);
+      void this.sendInitialize(proc);
       await trace(
         join(this.stateDir, "resume.log"),
         `adopted keeper ${basename(dir)} for ${spec.sessionId} (claude pid ${info.claudePid})`,
@@ -5443,6 +5563,7 @@ export class ClaudeCodeAdapter extends LlmAdapter {
         onExit: (p) => {
           if (this.processes.get(key2) === p) {
             this.processes.delete(key2);
+            this.sessionTasks.delete(options.sessionId);
             // A dead process has no waiting steers; the card clears now, not at the fallback.
             this.publishAsides(options.sessionId);
           }
@@ -5451,7 +5572,18 @@ export class ClaudeCodeAdapter extends LlmAdapter {
       proc.key = key;
       proc.resuming = prep.session?.resuming ?? false;
       proc.onIdleResult = () => this.wake(options.sessionId, proc);
+      // `spawned`, not `proc`: the closure sees the outer `let proc`, which the compiler cannot
+      // prove is still this process.
+      const spawned = proc;
+      proc.onSuggestion = () => {
+        void trace(
+          join(this.stateDir, "resume.log"),
+          `suggestion ${options.sessionId}: ${spawned.suggestion?.text ?? ""}`,
+        );
+        this.publishAsides(options.sessionId);
+      };
       this.processes.set(key2, proc);
+      void this.sendInitialize(proc);
       // The spawn is where `liveMode` changes without a pick.
       this.publishPermissionMode(options.sessionId);
       if (this.config.debug) {
@@ -6016,6 +6148,7 @@ export class ClaudeCodeAdapter extends LlmAdapter {
     this.sessionTools.delete(sessionId);
     this.sessionPluginErrors.delete(sessionId);
     this.sessionPluginWarnings.delete(sessionId);
+    this.sessionTasks.delete(sessionId);
     this.sessionFallbacks.delete(sessionId);
     this.permissionAsks.delete(sessionId);
     this.awaitingInput.delete(sessionId);
@@ -6200,6 +6333,13 @@ export class ClaudeCodeAdapter extends LlmAdapter {
     if (prep.input === null || !proc.write(prep.input))
       throw new LlmError("claude process is not running", "PROVIDER_ERROR");
     proc.promptSentAt = Date.now();
+    // The guess was for the prompt that just went out; the result that follows brings a new one,
+    // and only a frame after that result is stored (see `noteSuggestion`). Published at once: the
+    // card's own read runs every 30 s while the stream is up, and the publish before the write
+    // carried the old text.
+    proc.suggestion = undefined;
+    proc.resultSeen = false;
+    this.publishAsides(cont.options.sessionId);
   }
 
   /**
@@ -6587,6 +6727,15 @@ export class ClaudeCodeAdapter extends LlmAdapter {
             }
           : undefined,
       redact: this.redact,
+      onTask: (taskId, patch) => {
+        if (!options.sessionId) return;
+        this.noteTask(options.sessionId, taskId, patch);
+      },
+      noteApiKey: () => {
+        if (proc.apiKeyNoted) return false;
+        proc.apiKeyNoted = true;
+        return true;
+      },
       onInit: (names, tools, pluginErrors, pluginWarnings) => {
         // commands_changed re-sends the command catalog alone, so an empty tool list means "not
         // told", not "no tools": overwriting would drop what the init frame established.
@@ -7907,6 +8056,11 @@ export function apply(ctx: PluginContext, config: Schemastery.TypeT<typeof Confi
       pluginErrors: (sessionId: string) => adapter.ownerFor(sessionId).pluginErrorsFor(sessionId),
       pluginWarnings: (sessionId: string) =>
         adapter.ownerFor(sessionId).pluginWarningsFor(sessionId),
+      liveTasks: (sessionId: string) => adapter.ownerFor(sessionId).liveTasksFor(sessionId),
+      stopTask: (sessionId: string, taskId: string) =>
+        adapter.ownerFor(sessionId).stopTask(sessionId, taskId),
+      taskOutput: (sessionId: string, taskId: string) =>
+        adapter.ownerFor(sessionId).taskOutput(sessionId, taskId),
       awaiting: () => adapter.awaitingAll(),
       continueAfterLimit: adapter.config.continueAfterLimit,
     });

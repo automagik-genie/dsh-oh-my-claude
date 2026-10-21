@@ -116,6 +116,9 @@ export type ClaudeEvent =
       subtype?: string;
       /** subtype "init": the CLI's slash-command catalog (skills, custom commands, built-ins). */
       slash_commands?: JsonValue;
+      /** subtype "init": where the credential for API requests came from (`ANTHROPIC_API_KEY`,
+       *  `apiKeyHelper`, `none` for the claude.ai login, and the rest of the CLI's enum). */
+      apiKeySource?: string;
       /** subtype "init": every tool name the session has; MCP ones read `mcp__<server>__<tool>`. */
       tools?: JsonValue;
       /** subtype "init": plugins the CLI could not load, `{plugin,type,message}` each. Present only
@@ -757,6 +760,15 @@ export function decodeContextUsage(v: JsonValue | undefined): ContextUsage {
   return out;
 }
 
+/** The text of a `get_task_output` answer: its `output` string when the CLI sent one, else the
+ *  whole answer as JSON so an unexpected shape is still readable, and "" for nothing. */
+export function decodeTaskOutput(v: JsonValue | undefined): string {
+  if (v === undefined || v === null) return "";
+  const r = typeof v === "object" && !Array.isArray(v) ? v : {};
+  if (typeof r.output === "string") return r.output;
+  return JSON.stringify(v);
+}
+
 /** The `title` of a `generate_session_title` answer, trimmed; undefined when absent or empty. */
 export function decodeTitle(v: JsonValue | undefined): string | undefined {
   const r = typeof v === "object" && v !== null && !Array.isArray(v) ? v : {};
@@ -1125,6 +1137,10 @@ export function parseQuestions(
     if (!item || typeof item !== "object" || typeof item.question !== "string" || !item.question)
       return undefined;
     const options: AskUserQuestionItem["options"] = [];
+    // dsh's option has a label and a description only; a preview (a mockup, a snippet) rides
+    // under the question as `detail`, one fenced block per option, four backticks so a preview
+    // that holds a fence of its own survives.
+    const previews: string[] = [];
     for (const o of Array.isArray(item.options) ? item.options : []) {
       if (!o || typeof o.label !== "string" || !o.label) return undefined;
       const optObj: AskUserQuestionItem["options"][number] = {
@@ -1132,6 +1148,8 @@ export function parseQuestions(
       };
       if (typeof o.description === "string" && o.description) optObj.description = o.description;
       options.push(optObj);
+      if (typeof o.preview === "string" && o.preview.trim() !== "")
+        previews.push(`**${o.label}**\n\n\`\`\`\`\n${o.preview.trim()}\n\`\`\`\``);
     }
     const outItem: AskUserQuestionItem = {
       id: `${toolUseId}:${index}`,
@@ -1140,6 +1158,7 @@ export function parseQuestions(
       multiSelect: item.multiSelect === true,
     };
     if (typeof item.header === "string" && item.header) outItem.header = item.header;
+    if (previews.length > 0) outItem.detail = previews.join("\n\n");
     out.push(outItem);
   }
   return out;
@@ -1681,6 +1700,22 @@ export class ClaudeProcess {
   staleContext: boolean = false;
   /** Sees every `control_response` line as it arrives, even between turns; true means consumed. */
   controlListener?: (event: ClaudeEvent) => boolean;
+  /** The API-key line was drawn for this process. The init frame that carries `apiKeySource`
+   *  comes with every user message in -p mode, and each turn has a fresh translator, so the
+   *  once-per-process memory lives here. */
+  apiKeyNoted = false;
+  /** The CLI's guess at the next prompt, from a `prompt_suggestion` frame, kept until the next
+   *  prompt is written so the composer card can offer it between turns. Absent most of the time:
+   *  the CLI withholds one below two assistant messages, in plan mode, behind a pending
+   *  permission, on a rate-limit warning, with a cold prompt cache, or when its own quality
+   *  filter rejects the text. */
+  suggestion?: { text: string; at: number };
+  /** Fires when a suggestion arrives, so the adapter can push it to every open tab. */
+  onSuggestion?: () => void;
+  /** A result line passed since the last prompt went out. A suggestion is stored only then: the
+   *  CLI aborts its in-flight guess on new input, so a frame that still lands after a prompt was
+   *  written is for the turn before it. Set by the readline handler, cleared by the prompt write. */
+  resultSeen = false;
 
   /** Spawn the child Claude and feed its stdout into the line queue, noting idle completion replies
    *  so the adapter can open a dsh turn. */
@@ -1718,6 +1753,17 @@ export class ClaudeProcess {
     });
     const rl = createInterface({ input: this.child.stdout, crlfDelay: Infinity });
     rl.on("line", (line) => {
+      // Consumed here, not queued: the frame lands after the result that ended the turn, when no
+      // turn is reading, and a queued copy would open the next turn as an unknown event.
+      if (line.includes('"prompt_suggestion"') && this.noteSuggestion(line)) return;
+      // `"type":"result"` is how the CLI's JSON spells it; a result inside a tool's text would
+      // need the space-free key too, and a false positive only lets a suggestion through early.
+      if (line.includes('"type":"result"')) {
+        this.resultSeen = true;
+        // The guess that stood before this turn is for a prompt that has gone; the frame that
+        // follows this result, if the CLI sends one, is the new guess.
+        this.suggestion = undefined;
+      }
       if (this.controlListener && line.includes('"control_response"')) {
         try {
           // SAFETY: I/O boundary; the listener branches on `type` and ignores anything else
@@ -1767,6 +1813,33 @@ export class ClaudeProcess {
   /** Queue a synthetic event for the turn loop (the MCP bridge relaying a dsh tool call). */
   inject(event: ClaudeEvent) {
     this.queue.push(event);
+  }
+
+  /** True when `line` is a `prompt_suggestion` frame, which is then consumed; it is stored on
+   *  `suggestion` only when a result has passed since the last prompt went out (`resultSeen`),
+   *  and an empty text is consumed without storing. A line that is not JSON, or JSON of another
+   *  type, is left for the queue. The hook's own throw is swallowed: this runs inside readline's
+   *  data handler, and a hot-reloaded adapter behind it would take the host down. */
+  noteSuggestion(line: string): boolean {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      return false;
+    }
+    if (typeof parsed !== "object" || parsed === null) return false;
+    // SAFETY: a non-null object; each field is compared to a literal before use
+    const r = parsed as { type?: unknown; suggestion?: unknown };
+    if (r.type !== "prompt_suggestion" || typeof r.suggestion !== "string") return false;
+    const text = r.suggestion.trim();
+    if (text === "" || !this.resultSeen) return true;
+    this.suggestion = { text, at: Date.now() };
+    try {
+      this.onSuggestion?.();
+    } catch {
+      // logged by the adapter when it can; nothing else to do here
+    }
+    return true;
   }
 
   /** A `result` line while no turn is reading: Claude just finished a turn of its own. Tell the
