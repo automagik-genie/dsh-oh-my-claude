@@ -4538,25 +4538,35 @@ export class ClaudeCodeAdapter extends LlmAdapter {
    *  CLI did apply; harmless. A suggestion still arrives only on the CLI's own terms (see
    *  `ClaudeProcess.suggestion`). */
   async sendInitialize(proc: ClaudeProcess): Promise<void> {
+    // Resolves once the request is written, not answered: the spawn path awaits it so the request
+    // goes out ahead of the first prompt. Sent after the prompt, mid-turn, the CLI took it (the
+    // reply said so) and never produced a suggestion for that session (2026-10-21, three fresh
+    // sessions); sent before, it suggests from the second turn on. The reply is read in the
+    // background for the log.
+    let hints: Record<string, boolean | number> = {};
     try {
-      const hints = await readHints(join(this.stateDir, "hints.json"));
-      const request = {
-        subtype: "initialize",
-        agentProgressSummaries: true,
-        promptSuggestions: hints.promptSuggestionsOff !== true,
-      } satisfies Record<string, JsonValue>;
-      const reply = await this.control(proc, request, 15_000);
-      if (!reply.ok) this.log("warn", `initialize not applied: ${reply.error}`);
-      // Diagnostics beside the rest: whether the CLI took the request and what it was asked for,
-      // so a session that never shows a suggestion can be read back from resume.log.
-      void trace(
-        join(this.stateDir, "resume.log"),
-        `initialize ${proc.spec?.sessionId ?? "?"}: ${reply.ok ? "applied" : `refused (${reply.error})`}, suggestions ${request.promptSuggestions ? "on" : "off"}`,
-      );
+      hints = await readHints(join(this.stateDir, "hints.json"));
     } catch (error) {
-      // Called with `void`: a throw here would be an unhandled rejection, not a logged line.
-      this.log("warn", `initialize not applied: ${errorText(error)}`);
+      this.log("warn", `hints unreadable before initialize: ${errorText(error)}`);
     }
+    const request = {
+      subtype: "initialize",
+      agentProgressSummaries: true,
+      promptSuggestions: hints.promptSuggestionsOff !== true,
+    } satisfies Record<string, JsonValue>;
+    // `control` answers a failure as `ok: false` rather than throwing; the catch is for anything
+    // the trace itself raises, so nothing here becomes an unhandled rejection.
+    void this.control(proc, request, 15_000)
+      .then((reply) => {
+        if (!reply.ok) this.log("warn", `initialize not applied: ${reply.error}`);
+        // Diagnostics beside the rest: whether the CLI took the request and what it was asked
+        // for, so a session that never shows a suggestion can be read back from resume.log.
+        return trace(
+          join(this.stateDir, "resume.log"),
+          `initialize ${proc.spec?.sessionId ?? "?"}: ${reply.ok ? "applied" : `refused (${reply.error})`}, suggestions ${request.promptSuggestions ? "on" : "off"}`,
+        );
+      })
+      .catch((error) => this.log("warn", `initialize: ${errorText(error)}`));
   }
 
   /** Ask the CLI how many tokens this session's context window holds, bank the figure for dsh's context ring under both the spec and CLI model names, and flag an assumed-behind window when this box runs behind a proxy. */
@@ -5210,6 +5220,12 @@ export class ClaudeCodeAdapter extends LlmAdapter {
       proc.resuming = true;
       this.carryTotals(proc, sessionId);
       proc.onIdleResult = () => this.wake(sessionId, proc);
+      proc.onSuggestionDropped = (reason) => {
+        void trace(
+          join(this.stateDir, "resume.log"),
+          `suggestion ${sessionId}: dropped, ${reason}`,
+        );
+      };
       proc.onSuggestion = () => {
         void trace(
           join(this.stateDir, "resume.log"),
@@ -5317,6 +5333,12 @@ export class ClaudeCodeAdapter extends LlmAdapter {
       proc.resuming = true;
       this.carryTotals(proc, spec.sessionId);
       proc.onIdleResult = () => this.wake(spec.sessionId, proc);
+      proc.onSuggestionDropped = (reason) => {
+        void trace(
+          join(this.stateDir, "resume.log"),
+          `suggestion ${spec.sessionId}: dropped, ${reason}`,
+        );
+      };
       proc.onSuggestion = () => {
         void trace(
           join(this.stateDir, "resume.log"),
@@ -5575,6 +5597,12 @@ export class ClaudeCodeAdapter extends LlmAdapter {
       // `spawned`, not `proc`: the closure sees the outer `let proc`, which the compiler cannot
       // prove is still this process.
       const spawned = proc;
+      proc.onSuggestionDropped = (reason) => {
+        void trace(
+          join(this.stateDir, "resume.log"),
+          `suggestion ${options.sessionId}: dropped, ${reason}`,
+        );
+      };
       proc.onSuggestion = () => {
         void trace(
           join(this.stateDir, "resume.log"),
@@ -5583,7 +5611,8 @@ export class ClaudeCodeAdapter extends LlmAdapter {
         this.publishAsides(options.sessionId);
       };
       this.processes.set(key2, proc);
-      void this.sendInitialize(proc);
+      // Awaited: the write must precede the first prompt's (see sendInitialize).
+      await this.sendInitialize(proc);
       // The spawn is where `liveMode` changes without a pick.
       this.publishPermissionMode(options.sessionId);
       if (this.config.debug) {
