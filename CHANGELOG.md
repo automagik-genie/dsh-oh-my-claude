@@ -8,11 +8,20 @@ Versions from 1.0.0 up are on npm. Everything below 1.0.0 was released from the 
 
 ### Fixed
 
+- The plugin's `resume.log` under its state directory is trimmed to its newest 2 MB once it passes 4 MB; it grew without bound before.
+- Suggestions keep coming once a plan window passes its 75% warning. The CLI mutes its guesses there (and after twenty in a row nobody took, which over stream-json is all of them); the plugin now starts each session with the CLI's own override for both. A limit that is reached still mutes them.
+- On a phone the suggestion card's Use, Send and close stay together on one line under the text, instead of Use on the text's line and the other two dropping alone.
 - The suggestion card no longer flashes back for a moment when you send your own message over it: a fold now outlasts the typing by a beat and holds while the turn runs, until the server clears the guess.
 - A new session now gets suggestions from its second reply on. The request that switches them on was reaching the CLI a beat after the first prompt, inside the first turn, and the CLI then never suggested anything for that session; it goes out ahead of the first prompt now.
 
 ### Added
 
+- Each plan window in the context ring popover says where it is heading at the current rate: the percent it ends at, or the time the cap lands, with the weekday once that is more than a day away. Nothing shows in the first 5 % of a window, when any first call reads as a runaway rate.
+- A context nudge above the composer once a session's window is 75 % full: how full, what the next prompt carries, and a Compact button that sends Claude's own `/compact` as the next prompt. Dismiss keeps it down until the next 10 %. On by default; Settings → Oh My Claude → "Compact nudge" turns it off, and a picker under it moves the threshold.
+- A Run button on every shell code block Claude writes (`bash`, `sh`, `zsh`, `shell`, `console`, `shellsession`). It writes the snippet into the composer as a prompt, fenced under "Run this:", and leaves the sending to you, so it runs through Claude's own Bash tool and dsh's approval; nothing runs from the click itself.
+- Session names travel both ways. A name typed into dsh's sidebar reaches Claude Code before the next prompt (`rename_session`), so `claude --resume` lists it; a name the CLI reports (`session_title_changed`, a name someone set, never its generated title) renames the dsh session. dsh's own generated or fallback titles are not sent, so they never overwrite the CLI's.
+- The MCP tab shows a tool count on each server row.
+- A model the API lists that the installed Claude Code's picker does not, released after every model the CLI offers, carries "Newer than the installed Claude Code; update the CLI to unlock it" in the picker.
 - Settings → Oh My Claude → "Suggested next prompt": after each reply, Claude's own guess at your next prompt appears above the composer with Use, which writes it into the box, and Send, which sends it as it is; it folds away while you type something else and comes back if you clear the box. On by default, as in the Claude Code terminal, and the switch turns it off; it costs one small model call per turn, nearly all of it cache reads, and the CLI sends a guess only when it has one it trusts.
 - Claude's background tasks and subagents are listed on the panel's Tasks tab while they run, each with Stop; a shell or Monitor task also has Output, the last 8 KiB it wrote.
 - A subagent's row in the chat shows each step the CLI reports for it ("Running Count lines in src/process.ts"), not only the tool name, plus the CLI's own one-line progress summary when it writes one, while the turn that started the subagent runs.

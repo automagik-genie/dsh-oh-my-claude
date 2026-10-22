@@ -117,6 +117,14 @@ import {
   RW_EVENT,
 } from "./picker.js";
 import { ClaudeUpdateDetails } from "./claude-updates.js";
+import { paceOf, WINDOW_MS } from "./pace.js";
+import {
+  COMPACT_AT,
+  COMPACT_AT_CHOICES,
+  compactThreshold,
+  runDraft,
+  SHELL_LANGS,
+} from "./nudge.js";
 import { type LimitLevel, worstLimit } from "./limits.js";
 import {
   noteWithdrawn,
@@ -3156,6 +3164,13 @@ const whose = (r: UsageReply): string => {
   return email || host;
 };
 
+/** A clock time, with the weekday once it is a day or more away: a weekly window at twice its
+ *  pace caps two days out, and a bare "8:40 PM" read as tonight (seen 2026-10-22). */
+const capClock = (at: number): string => {
+  const format: Intl.DateTimeFormatOptions = { hour: "numeric", minute: "2-digit" };
+  if (at - Date.now() >= 86_400_000) format.weekday = "short";
+  return new Date(at).toLocaleString(undefined, format);
+};
 /** "in 2 h 10 min" inside a day, else weekday and time. */
 const resetText = (at: number | null): string => {
   if (at === null) return "";
@@ -3477,6 +3492,22 @@ function renderUsage(block: HTMLElement, reply: UsageReply) {
     when.textContent = resetText(w.resetsAt);
     when.style.cssText = `grid-column:1 / -1;color:${T.faint};font-size:11px;line-height:16px`;
     usageRow.append(label, value, bar, when);
+    // At this rate: where the window ends up, or when the cap lands, from the share of the window
+    // already gone. Only the two plan windows have a known length; a model-scoped or unmet kind
+    // shows its reset alone.
+    // A model-scoped window ("Fable weekly") is a weekly window too.
+    const kind = w.kind ?? (w.model ? "weekly" : undefined);
+    const pace = kind ? paceOf(pct, w.resetsAt, WINDOW_MS[kind]) : undefined;
+    if (pace) {
+      const paceLine = document.createElement("span");
+      paceLine.setAttribute("data-omc-usage-pace", pace.kind);
+      paceLine.textContent =
+        pace.kind === "cap"
+          ? t("main.usage.paceCap", { when: capClock(pace.at) })
+          : t("main.usage.paceEnds", { percent: pace.percent });
+      paceLine.style.cssText = `grid-column:1 / -1;color:${pace.kind === "cap" ? T.warn : T.faint};font-size:11px;line-height:16px`;
+      usageRow.append(paceLine);
+    }
     block.append(usageRow);
   }
   if (reply.windows.length === 0) {
@@ -4047,7 +4078,7 @@ const ensureTurnStatusStyle = () => {
   // clearance, which leaves its pills 653px in a 717px column. dsh's two fill that; ours as a
   // third clips all three to an ellipsis by a few pixels. The pills are centred, so the padding
   // does no aligning; take it down to the row's rounded corners and the three fit.
-  styleEl.textContent = `${gated("row", '[role="status"][aria-live="polite"]:not([class*="visuallyHidden"])')},${gated("row", "[data-dsh-oh-my-claude-turn]", false)}{background-image:var(--omc-row-bg,linear-gradient(90deg,var(--omc-accent) 0%,var(--omc-accent) 40%,var(--omc-shimmer) 50%,var(--omc-accent) 60%,var(--omc-accent) 100%))}@keyframes omc-word{from{-webkit-text-fill-color:var(--omc-word-lo)}to{-webkit-text-fill-color:var(--omc-word-hi)}}[data-omc-turn-word]{animation:omc-word 1s ease-in-out 3s infinite alternate}@media (prefers-reduced-motion:reduce){[data-omc-turn-word]{animation:none}}[data-dsh-oh-my-claude-turn]>span[aria-hidden]{display:inline-block;width:1.3em;text-align:start;flex:none}[data-dsh-oh-my-claude-turn]{max-width:100%;min-width:0}[data-omc-turn-detail]{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}button[data-turn-process]:has([data-omc-turn-line])>span:not([data-omc-turn-line]),[data-chat-running]:has([data-omc-turn-line])>span:not([data-omc-turn-line]):not([role]):not([aria-hidden]){display:none}[data-omc-turn-closing]{display:none}${gated("row", "[data-omc-turn-closing]", false)}{display:inline}${gated("row", "button[data-turn-process]:has([data-omc-turn-closing])>span:not([data-omc-turn-closing])", false)}{display:none}[data-omc-turn-line]{background-clip:text;-webkit-background-clip:text;color:transparent;-webkit-text-fill-color:transparent;background-size:200% 100%;animation:omc-verb-sheen 1.5s linear infinite;max-width:100%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-flex;align-items:center;gap:2px}@keyframes omc-verb-sheen{from{background-position:200% 0}to{background-position:-200% 0}}[data-omc-turn-line][data-omc-mode="responding"],[data-omc-turn-line][data-omc-mode="thinking"]{animation-duration:6s;animation-direction:reverse}[data-omc-turn-line][data-omc-mode="tool-use"]{--omc-row-bg:linear-gradient(90deg,var(--omc-accent) 0%,var(--omc-shimmer) 50%,var(--omc-accent) 100%);background-size:20000% 100%;animation:omc-verb-pulse 1s ease-in-out infinite alternate}@keyframes omc-verb-pulse{from{background-position:0% 0}to{background-position:50% 0}}@media (prefers-reduced-motion:reduce){[data-omc-turn-line],[data-omc-turn-line][data-omc-mode]{animation:none}}button[data-turn-process]:has([data-omc-turn-line]){min-width:0;max-width:100%}${gated("panel", "[data-omc-login-card] button:hover", false)},${gated("panel", "[data-omc-update-card] button:not(:disabled):hover", false)}{color:var(--omc-accent)!important;background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.1))!important}${gated("panel", "[data-omc-login-card] button:focus-visible", false)},${gated("panel", "[data-omc-update-card] button:focus-visible", false)}{color:var(--omc-accent)!important;border-color:var(--omc-accent)!important}${controlStatesCss("[data-omc-settings]")}${controlStatesCss('[role="dialog"][aria-label="Oh My Claude"]')}${/* !important: the buttons carry their border inline (`btn`), which beats any sheet rule. */ ""}${/* Hover is dsh's row look: the background tints and the text takes the accent; the border stays put. It used to go accent too, and in dark mode a faint hairline turning orange read as a border appearing under the pointer on every tab (owner, 2026-09-23). The accent border is the keyboard focus ring only. */ ""}${gated("panel", '[data-omc-settings] button:not([role="switch"]):not([aria-expanded]):not(:disabled):hover', false)},${gated("panel", '[role="dialog"][aria-label="Oh My Claude"] button:not([role="switch"]):not([aria-expanded]):not(:disabled):hover', false)}{color:var(--omc-accent)!important;background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.1))!important}${gated("panel", '[data-omc-settings] button:not([role="switch"]):not([aria-expanded]):focus-visible', false)},${gated("panel", '[role="dialog"][aria-label="Oh My Claude"] button:not([role="switch"]):not([aria-expanded]):focus-visible', false)}{color:var(--omc-accent)!important;border-color:var(--omc-accent)!important}[data-omc-card]:hover{border-color:var(--dsw-alias-label-dimmed,rgba(128,128,128,.5))}[data-omc-card]>button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#3b82f6);outline-offset:-2px}[data-omc-card]>button:hover{background:none}@keyframes omc-sheen{from{background-position:200% 0}to{background-position:-200% 0}}[data-omc-skeleton]{border-radius:6px;background:linear-gradient(90deg,${T.border} 30%,${T.hover} 50%,${T.border} 70%);background-size:200% 100%;animation:omc-sheen 1.4s linear infinite}@keyframes omc-rise{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}@keyframes omc-drain{from{width:100%}to{width:0}}[data-omc-arrived]{animation:omc-rise .18s ease-out}@media (prefers-reduced-motion:reduce){[data-omc-skeleton],[data-omc-arrived]{animation:none}}${gated("prose", '[role="tablist"]>[role="tab"][aria-selected="true"]')}{color:var(--omc-accent)}${gated("prose", '[role="tablist"]>[role="tab"][aria-selected="true"]::after')}{background:var(--omc-accent)}${gated("prose", '[class*="_markdown"] blockquote')}{border-left-color:color-mix(in srgb,var(--omc-accent) 50.2%,transparent)}${gated("prose", '[class*="_markdown"] hr')}{background:color-mix(in srgb,var(--omc-accent) 34.9%,transparent)}${gated("prose", '[class*="_markdown"] a')}{color:var(--omc-accent);text-decoration-color:color-mix(in srgb,var(--omc-accent) 40%,transparent)}${gated("prose", '[class*="_markdown"] a:hover')}{color:var(--omc-shimmer);text-decoration-color:var(--omc-shimmer)}${/* A file path in Claude's answer is dsh's file-mention button (opens the file in the sidebar), drawn in the same link blue as a link and with no hook of its own, so its module class is matched by suffix like the rules above. */ ""}${gated("prose", 'button[class*="_fileMention"]')}{color:var(--omc-accent)}${gated("prose", 'button[class*="_fileMention"]:hover')},${gated("prose", 'button[class*="_fileMention"]:focus')}{color:var(--omc-shimmer);text-decoration-color:var(--omc-shimmer)}${gated("prose", 'button[class*="_fileMention"]:focus-visible')}{box-shadow:0 0 0 2px var(--omc-accent)}${gated("prose", '[class*="_markdown"] input[type="checkbox"]')}{accent-color:var(--omc-accent)}${/* The chips dsh draws in a sent bubble for a skill it knows (`/ic-logos`) and for a file mention: its business blue and its link blue. Selected by dsh's own `data-ref-chip` hook, which names the kind, not by the hashed class. */ ""}${gated("prose", "[data-ref-chip]")}{color:var(--omc-accent)}${gated("prose", "[data-ref-chip]:hover")},${gated("prose", "[data-ref-chip]:focus")}{color:var(--omc-shimmer);text-decoration-color:var(--omc-shimmer)}${gated("prose", "[data-ref-chip]:focus-visible")}{box-shadow:0 0 0 2px var(--omc-accent)}${/* A slash command typed in the composer: dsh's editor colours that text run with an inline `color: var(--dsw-alias-state-business-primary)`, its blue, and no hook of its own, so the inline token is the match. Inline, hence !important. Its other form, a command node the editor draws itself, carries dsh's `_reference _textRef` classes instead; the module suffix is matched. On dsh 0.2.1-rc.2 the command is a decorator chip under dsh's own `data-composer-command` hook, coloured on its `_chip` span (`.yAWgPa_chip{color:var(--dsw-alias-state-business-primary)}`), so that span is matched through the hook (owner saw blue commands, 2026-10-21). */ ""}${gated("composer", '[data-composer-input] [data-lexical-text][style*="business-primary"]')},${gated("composer", '[data-composer-input] [class*="_textRef"]')},${gated("composer", '[data-composer-input] [data-composer-command] [class*="_chip"]')}{color:var(--omc-accent)!important}${/* The composer's own chips (`@` file mention, session reference) draw the same blue from a hashed class and tint it on hover; dsh's `data-composer-chip` hook holds the chip as its only child. */ ""}${gated("composer", "[data-composer-input] [data-composer-chip]>span")}{color:var(--omc-accent)}${gated("composer", "[data-composer-input] [data-composer-chip]>span:hover")}{background:color-mix(in srgb,var(--omc-accent) 14%,transparent)}${/* The composer's text cursor: dsh sets `caret-color` to its business blue on the editor itself. */ ""}${gated("composer", "[data-composer-input]")}{caret-color:var(--omc-accent)}${gated("prose", "[data-workflow-run] button[data-member-status] [data-member-label]")}{color:var(--omc-accent)}${/* The icon tile on dsh's changed-files card is dsh's link blue; `data-changed-files` is dsh's own hook, and the class is matched by its module suffix since the prefix is generated per build. */ ""}${gated("prose", '[data-changed-files] [class*="_tile"]')}{background:var(--omc-accent)}body[data-omc-panel-open] [data-width-handle]{pointer-events:none}body[data-omc-panel-open] [class*="_toBottomSlot"],body:has([data-omc-cost-dialog]) [class*="_toBottomSlot"]{opacity:0;pointer-events:none;transition:opacity .1s}${/* dsh's Back-to-bottom button sits `--dsh-composer-height` above the page bottom, and that height is the composer stack's, our strip included; while the strip is mounted its height (published on body by the strip) comes back off, so the button stays where it was. dsh's module suffix, as the rule above. */ ""}body:has([data-omc-dock-status]) [class*="_toBottomSlot"]{bottom:calc(var(--dsh-composer-height,152px) + 16px - var(--omc-dock-height,0px) - var(--dsh-composer-stack-gap,6px))}${/* Held there, the button lands on the strip's row at its right end, so the strip's column leaves the button's footprint free while the button is drawn and the line's ellipsis takes the cut instead of a collision (owner, 2026-09-23). */ ""}body:has([class*="_toBottomSlot"] button) [data-omc-dock-status]>div{padding-right:44px}@keyframes omc-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--omc-accent) 55%,transparent)}100%{box-shadow:0 0 0 12px transparent}}${gated("panel", 'button[aria-label="Oh My Claude"][data-omc-pulse]', false)}{animation:omc-pulse 1.1s ease-out 3}@media (prefers-reduced-motion:reduce){button[aria-label="Oh My Claude"][data-omc-pulse]{animation:none}}${gated("prose", "[data-presented-files-row] button")}{color:var(--omc-accent)}${gated("prose", "[data-presented-files-row] button:hover")}{color:var(--omc-shimmer)}body[data-omc-claude] [data-composer-stats]{padding-left:8px;padding-right:8px}${gated("prose", '[class*="_optionLine"]>[class*="_badge"]')}{background:color-mix(in srgb,var(--omc-accent) 16%,transparent);color:var(--omc-accent)}[data-omc-cost-over]{color:var(--omc-accent)}${gated("row", 'svg[data-state="ongoing"]:not([role="treeitem"] *)')},${gated("row", '[role="treeitem"][data-omc-claude] svg[data-state="ongoing"]', false)}{--dsh-state-ongoing:var(--omc-accent);color:var(--omc-accent)}${/* Claude's model names in the composer's picker (trigger, the menu's current value, each option row). Since dsh 0.2.1-alpha.5 every name sits in a span carrying `data-provider-id`, dsh's documented hook for styling the label without taking its single-occupant slot, which dsh's own badge plugin holds from 0.2.1-rc.1. Its own group, so it can be turned off alone, and ungated by session, because the picker lists Claude rows in every session. */ ""}${gated("models", '[data-provider-id^="claude-code"]', false)}{color:var(--omc-accent)}${RAINBOW_CSS}${COST_DIALOG_CSS}`;
+  styleEl.textContent = `${gated("row", '[role="status"][aria-live="polite"]:not([class*="visuallyHidden"])')},${gated("row", "[data-dsh-oh-my-claude-turn]", false)}{background-image:var(--omc-row-bg,linear-gradient(90deg,var(--omc-accent) 0%,var(--omc-accent) 40%,var(--omc-shimmer) 50%,var(--omc-accent) 60%,var(--omc-accent) 100%))}@keyframes omc-word{from{-webkit-text-fill-color:var(--omc-word-lo)}to{-webkit-text-fill-color:var(--omc-word-hi)}}[data-omc-turn-word]{animation:omc-word 1s ease-in-out 3s infinite alternate}@media (prefers-reduced-motion:reduce){[data-omc-turn-word]{animation:none}}[data-dsh-oh-my-claude-turn]>span[aria-hidden]{display:inline-block;width:1.3em;text-align:start;flex:none}[data-dsh-oh-my-claude-turn]{max-width:100%;min-width:0}[data-omc-turn-detail]{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}button[data-turn-process]:has([data-omc-turn-line])>span:not([data-omc-turn-line]),[data-chat-running]:has([data-omc-turn-line])>span:not([data-omc-turn-line]):not([role]):not([aria-hidden]){display:none}[data-omc-turn-closing]{display:none}${gated("row", "[data-omc-turn-closing]", false)}{display:inline}${gated("row", "button[data-turn-process]:has([data-omc-turn-closing])>span:not([data-omc-turn-closing])", false)}{display:none}[data-omc-turn-line]{background-clip:text;-webkit-background-clip:text;color:transparent;-webkit-text-fill-color:transparent;background-size:200% 100%;animation:omc-verb-sheen 1.5s linear infinite;max-width:100%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-flex;align-items:center;gap:2px}@keyframes omc-verb-sheen{from{background-position:200% 0}to{background-position:-200% 0}}[data-omc-turn-line][data-omc-mode="responding"],[data-omc-turn-line][data-omc-mode="thinking"]{animation-duration:6s;animation-direction:reverse}[data-omc-turn-line][data-omc-mode="tool-use"]{--omc-row-bg:linear-gradient(90deg,var(--omc-accent) 0%,var(--omc-shimmer) 50%,var(--omc-accent) 100%);background-size:20000% 100%;animation:omc-verb-pulse 1s ease-in-out infinite alternate}@keyframes omc-verb-pulse{from{background-position:0% 0}to{background-position:50% 0}}@media (prefers-reduced-motion:reduce){[data-omc-turn-line],[data-omc-turn-line][data-omc-mode]{animation:none}}button[data-turn-process]:has([data-omc-turn-line]){min-width:0;max-width:100%}${gated("panel", "[data-omc-login-card] button:hover", false)},${gated("panel", "[data-omc-update-card] button:not(:disabled):hover", false)}{color:var(--omc-accent)!important;background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.1))!important}${gated("panel", "[data-omc-login-card] button:focus-visible", false)},${gated("panel", "[data-omc-update-card] button:focus-visible", false)}{color:var(--omc-accent)!important;border-color:var(--omc-accent)!important}${controlStatesCss("[data-omc-settings]")}${controlStatesCss('[role="dialog"][aria-label="Oh My Claude"]')}${/* !important: the buttons carry their border inline (`btn`), which beats any sheet rule. */ ""}${/* Hover is dsh's row look: the background tints and the text takes the accent; the border stays put. It used to go accent too, and in dark mode a faint hairline turning orange read as a border appearing under the pointer on every tab (owner, 2026-09-23). The accent border is the keyboard focus ring only. */ ""}${gated("panel", '[data-omc-settings] button:not([role="switch"]):not([aria-expanded]):not(:disabled):hover', false)},${gated("panel", '[role="dialog"][aria-label="Oh My Claude"] button:not([role="switch"]):not([aria-expanded]):not(:disabled):hover', false)}{color:var(--omc-accent)!important;background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.1))!important}${gated("panel", '[data-omc-settings] button:not([role="switch"]):not([aria-expanded]):focus-visible', false)},${gated("panel", '[role="dialog"][aria-label="Oh My Claude"] button:not([role="switch"]):not([aria-expanded]):focus-visible', false)}{color:var(--omc-accent)!important;border-color:var(--omc-accent)!important}[data-omc-card]:hover{border-color:var(--dsw-alias-label-dimmed,rgba(128,128,128,.5))}[data-omc-card]>button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#3b82f6);outline-offset:-2px}[data-omc-card]>button:hover{background:none}@keyframes omc-sheen{from{background-position:200% 0}to{background-position:-200% 0}}[data-omc-skeleton]{border-radius:6px;background:linear-gradient(90deg,${T.border} 30%,${T.hover} 50%,${T.border} 70%);background-size:200% 100%;animation:omc-sheen 1.4s linear infinite}@keyframes omc-rise{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}@keyframes omc-drain{from{width:100%}to{width:0}}[data-omc-arrived]{animation:omc-rise .18s ease-out}@media (prefers-reduced-motion:reduce){[data-omc-skeleton],[data-omc-arrived]{animation:none}}${gated("prose", '[role="tablist"]>[role="tab"][aria-selected="true"]')}{color:var(--omc-accent)}${gated("prose", '[role="tablist"]>[role="tab"][aria-selected="true"]::after')}{background:var(--omc-accent)}${gated("prose", '[class*="_markdown"] blockquote')}{border-left-color:color-mix(in srgb,var(--omc-accent) 50.2%,transparent)}${gated("prose", '[class*="_markdown"] hr')}{background:color-mix(in srgb,var(--omc-accent) 34.9%,transparent)}${gated("prose", '[class*="_markdown"] a')}{color:var(--omc-accent);text-decoration-color:color-mix(in srgb,var(--omc-accent) 40%,transparent)}${gated("prose", '[class*="_markdown"] a:hover')}{color:var(--omc-shimmer);text-decoration-color:var(--omc-shimmer)}${/* A file path in Claude's answer is dsh's file-mention button (opens the file in the sidebar), drawn in the same link blue as a link and with no hook of its own, so its module class is matched by suffix like the rules above. */ ""}${gated("prose", 'button[class*="_fileMention"]')}{color:var(--omc-accent)}${gated("prose", 'button[class*="_fileMention"]:hover')},${gated("prose", 'button[class*="_fileMention"]:focus')}{color:var(--omc-shimmer);text-decoration-color:var(--omc-shimmer)}${gated("prose", 'button[class*="_fileMention"]:focus-visible')}{box-shadow:0 0 0 2px var(--omc-accent)}${gated("prose", '[class*="_markdown"] input[type="checkbox"]')}{accent-color:var(--omc-accent)}${/* The chips dsh draws in a sent bubble for a skill it knows (`/ic-logos`) and for a file mention: its business blue and its link blue. Selected by dsh's own `data-ref-chip` hook, which names the kind, not by the hashed class. */ ""}${gated("prose", "[data-ref-chip]")}{color:var(--omc-accent)}${gated("prose", "[data-ref-chip]:hover")},${gated("prose", "[data-ref-chip]:focus")}{color:var(--omc-shimmer);text-decoration-color:var(--omc-shimmer)}${gated("prose", "[data-ref-chip]:focus-visible")}{box-shadow:0 0 0 2px var(--omc-accent)}${/* A slash command typed in the composer: dsh's editor colours that text run with an inline `color: var(--dsw-alias-state-business-primary)`, its blue, and no hook of its own, so the inline token is the match. Inline, hence !important. Its other form, a command node the editor draws itself, carries dsh's `_reference _textRef` classes instead; the module suffix is matched. On dsh 0.2.1-rc.2 the command is a decorator chip under dsh's own `data-composer-command` hook, coloured on its `_chip` span (`.yAWgPa_chip{color:var(--dsw-alias-state-business-primary)}`), so that span is matched through the hook (owner saw blue commands, 2026-10-21). */ ""}${gated("composer", '[data-composer-input] [data-lexical-text][style*="business-primary"]')},${gated("composer", '[data-composer-input] [class*="_textRef"]')},${gated("composer", '[data-composer-input] [data-composer-command] [class*="_chip"]')}{color:var(--omc-accent)!important}${/* The composer's own chips (`@` file mention, session reference) draw the same blue from a hashed class and tint it on hover; dsh's `data-composer-chip` hook holds the chip as its only child. */ ""}${gated("composer", "[data-composer-input] [data-composer-chip]>span")}{color:var(--omc-accent)}${gated("composer", "[data-composer-input] [data-composer-chip]>span:hover")}{background:color-mix(in srgb,var(--omc-accent) 14%,transparent)}${/* The composer's text cursor: dsh sets `caret-color` to its business blue on the editor itself. */ ""}${gated("composer", "[data-composer-input]")}{caret-color:var(--omc-accent)}${gated("prose", "[data-workflow-run] button[data-member-status] [data-member-label]")}{color:var(--omc-accent)}${/* The icon tile on dsh's changed-files card is dsh's link blue; `data-changed-files` is dsh's own hook, and the class is matched by its module suffix since the prefix is generated per build. */ ""}${gated("prose", '[data-changed-files] [class*="_tile"]')}{background:var(--omc-accent)}body[data-omc-panel-open] [data-width-handle]{pointer-events:none}body[data-omc-panel-open] [class*="_toBottomSlot"],body:has([data-omc-cost-dialog]) [class*="_toBottomSlot"]{opacity:0;pointer-events:none;transition:opacity .1s}${/* dsh's Back-to-bottom button sits `--dsh-composer-height` above the page bottom, and that height is the composer stack's, our strip included; while the strip is mounted its height (published on body by the strip) comes back off, so the button stays where it was. dsh's module suffix, as the rule above. */ ""}body:has([data-omc-dock-status]) [class*="_toBottomSlot"]{bottom:calc(var(--dsh-composer-height,152px) + 16px - var(--omc-dock-height,0px) - var(--dsh-composer-stack-gap,6px))}${/* Held there, the button lands on the strip's row at its right end, so the strip's column leaves the button's footprint free while the button is drawn and the line's ellipsis takes the cut instead of a collision (owner, 2026-09-23). */ ""}body:has([class*="_toBottomSlot"] button) [data-omc-dock-status]>div{padding-right:44px}@keyframes omc-pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--omc-accent) 55%,transparent)}100%{box-shadow:0 0 0 12px transparent}}${gated("panel", 'button[aria-label="Oh My Claude"][data-omc-pulse]', false)}{animation:omc-pulse 1.1s ease-out 3}@media (prefers-reduced-motion:reduce){button[aria-label="Oh My Claude"][data-omc-pulse]{animation:none}}${gated("prose", "[data-presented-files-row] button")}{color:var(--omc-accent)}${gated("prose", "[data-presented-files-row] button:hover")}{color:var(--omc-shimmer)}body[data-omc-claude] [data-composer-stats]{padding-left:8px;padding-right:8px}${gated("prose", '[class*="_optionLine"]>[class*="_badge"]')}{background:color-mix(in srgb,var(--omc-accent) 16%,transparent);color:var(--omc-accent)}[data-omc-cost-over]{color:var(--omc-accent)}${gated("row", 'svg[data-state="ongoing"]:not([role="treeitem"] *)')},${gated("row", '[role="treeitem"][data-omc-claude] svg[data-state="ongoing"]', false)}{--dsh-state-ongoing:var(--omc-accent);color:var(--omc-accent)}${/* Claude's model names in the composer's picker (trigger, the menu's current value, each option row). Since dsh 0.2.1-alpha.5 every name sits in a span carrying `data-provider-id`, dsh's documented hook for styling the label without taking its single-occupant slot, which dsh's own badge plugin holds from 0.2.1-rc.1. Its own group, so it can be turned off alone, and ungated by session, because the picker lists Claude rows in every session. */ ""}${gated("models", '[data-provider-id^="claude-code"]', false)}{color:var(--omc-accent)}${/* The suggestion card at phone width: two rows, the label and the buttons on the first and the guess on its own line under them (owner, 2026-10-21). On the card's own width, not the viewport's, so a narrow desktop column gets the same. */ ""}[data-omc-suggestion-card]{container-type:inline-size}@container (max-width:480px){[data-omc-suggestion-card] [data-omc-suggestion-text]{order:9;flex:1 1 100%}[data-omc-suggestion-card] [data-omc-suggestion-use],[data-omc-suggestion-card] [data-omc-suggestion-send]{padding:4px 8px!important}}${RAINBOW_CSS}${COST_DIALOG_CSS}`;
   document.head.appendChild(styleEl);
 };
 
@@ -5178,6 +5209,126 @@ const paintClosing = (
   }
   if (stopped || clock !== undefined || !newest) group.setAttribute(CLOSED_MARK, "1");
 };
+
+/** The play glyph for the Run button, drawn like dsh's own code-block icons (16-unit box, 1px
+ *  `currentColor` stroke, 14px on screen) so it reads as one of them. */
+function playIcon(): SVGSVGElement {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  const attrs: [string, string][] = [
+    ["width", "14"],
+    ["height", "14"],
+    ["viewBox", "0 0 16 16"],
+    ["fill", "none"],
+    ["aria-hidden", "true"],
+    ["stroke-width", "1"],
+  ];
+  for (const [k, v] of attrs) svg.setAttribute(k, v);
+  const path = document.createElementNS(ns, "path");
+  path.setAttribute("d", "M4.5 2.5v11l8.5-5.5z");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-linejoin", "round");
+  svg.append(path);
+  return svg;
+}
+
+/** The one tooltip bubble on screen, if any, with the element it describes. One at a time, as in
+ *  dsh: a second hover replaces the first. */
+let tipOpen: { bubble: HTMLElement; anchor: HTMLElement } | null = null;
+/** Take the open bubble down and drop the anchor's `aria-describedby` to it. */
+function hideTip(): void {
+  if (!tipOpen) return;
+  tipOpen.bubble.remove();
+  tipOpen.anchor.removeAttribute("aria-describedby");
+  tipOpen = null;
+}
+/** Show `text` above `anchor` the way dsh's own tooltip does (centred, 8px gap, 12px from any
+ *  viewport edge, under it when there is no room above): a fixed `role=tooltip` bubble styled on
+ *  dsh's tooltip tokens, linked by `aria-describedby`. Nothing is shown for an empty text. */
+function showTip(anchor: HTMLElement, text: string): void {
+  hideTip();
+  if (text === "") return;
+  const bubble = document.createElement("span");
+  bubble.setAttribute("data-omc-tip", "");
+  bubble.setAttribute("role", "tooltip");
+  bubble.id = `omc-tip-${Math.random().toString(36).slice(2, 8)}`;
+  const label = document.createElement("span");
+  label.textContent = text;
+  bubble.append(label);
+  bubble.style.visibility = "hidden";
+  document.body.append(bubble);
+  const edge = 12;
+  const gap = 8;
+  const r = anchor.getBoundingClientRect();
+  const { width, height } = bubble.getBoundingClientRect();
+  const above = r.top - gap - height >= edge;
+  const x = Math.max(
+    edge,
+    Math.min(r.left + r.width / 2 - width / 2, window.innerWidth - edge - width),
+  );
+  bubble.style.left = `${x + width / 2}px`;
+  bubble.style.top = `${above ? r.top - gap : r.bottom + gap}px`;
+  bubble.setAttribute("data-side", above ? "top" : "bottom");
+  bubble.style.visibility = "visible";
+  anchor.setAttribute("aria-describedby", bubble.id);
+  tipOpen = { bubble, anchor };
+}
+/** Give an element a dsh-style tooltip in place of the browser's `title`: shown on hover and on
+ *  keyboard focus, hidden on leave, blur, click and Escape. `text` is read each time, so a
+ *  language switch shows the new wording without re-attaching. */
+function attachTip(anchor: HTMLElement, text: () => string): void {
+  const show = () => showTip(anchor, text());
+  anchor.addEventListener("mouseenter", show);
+  anchor.addEventListener("focus", show);
+  for (const ev of ["mouseleave", "blur", "click"]) anchor.addEventListener(ev, hideTip);
+  anchor.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") hideTip();
+  });
+}
+
+/** The composer actions of the aside dock entry on screen, for the Run button, which is drawn
+ *  outside any React tree. Null without a composer, so no button is offered. */
+let dockComposer: ComposerSlot["inputActions"] | null = null;
+/**
+ * A Run button in the banner of every shell code block in a Claude session. Clicking writes the
+ * snippet into the composer as a prompt, fenced under "Run this:", and leaves sending to you: the
+ * owner found a button that sends at once too easy to hit for something that tells Claude to run
+ * a command (2026-10-21). Nothing on the box runs from the click itself. The block is dsh's `.md-code-block`
+ * with a `[data-code-block-banner]` holding the language span and an actions div (Wrap lines);
+ * a block drawn without its banner yet is left for the next scan.
+ */
+function watchRunButtons(ctx: ClientCtx) {
+  onBodyMutation(() => {
+    if (!activeClaudeSession(ctx) || !dockComposer) return;
+    for (const block of document.querySelectorAll<HTMLElement>(
+      ".md-code-block:not([data-omc-run-seen])",
+    )) {
+      const banner = block.querySelector<HTMLElement>("[data-code-block-banner]");
+      const actions = banner?.querySelector("button")?.parentElement;
+      if (!banner || !actions) continue;
+      block.setAttribute("data-omc-run-seen", "");
+      const lang = banner.firstElementChild?.textContent?.trim().toLowerCase() ?? "";
+      if (!SHELL_LANGS.has(lang)) continue;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("data-omc-run", "");
+      // dsh's own action look and shape, so the button sits with Copy and Wrap lines as one more
+      // icon: its class, a 14px outline glyph, an aria-label, and a bubble like dsh's on hover.
+      button.className = actions.querySelector("button")?.className ?? "";
+      button.setAttribute("aria-label", t("main.run.button"));
+      button.append(playIcon());
+      attachTip(button, () => t("main.run.title"));
+      button.addEventListener("click", () => {
+        const snippet = block.querySelector("pre")?.textContent?.trimEnd() ?? "";
+        const composer = dockComposer;
+        if (!composer || snippet.trim() === "") return;
+        composer.setDraft(runDraft(lang, snippet));
+        document.querySelector<HTMLElement>("[data-composer-input]")?.focus();
+      });
+      actions.append(button);
+    }
+  });
+}
 
 /** Wire a running turn's status: attach dsh's [role=status][aria-live=polite] element to this
  *  session, keep the body marked to the active Claude session, and tear both down on unmount. */
@@ -8163,6 +8314,76 @@ function SuggestionSwitch() {
   );
 }
 
+/** The settings switch for the context nudge and, with it on, the percent it speaks at. Both are
+ *  hints like the suggestion switch above: the threshold is the box's, so every tab agrees on when
+ *  to speak up. The default is stored as absence, so a box that never touched it follows a moved
+ *  default. */
+function CompactNudgeSwitch() {
+  useLocale();
+  const [off, setOff] = useHintFlag("compactNudgeOff");
+  const [stored, setStored] = useHintValue("compactNudgeAt");
+  const at = compactThreshold(stored);
+  return (
+    <>
+      <div
+        data-omc-compact-switch=""
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          fontSize: 13,
+          marginBottom: off ? 12 : 4,
+        }}
+      >
+        <div>
+          <div>{t("main.settingsUi.compactTitle")}</div>
+          <div style={{ color: T.faint, fontSize: 12 }}>
+            {t("main.settingsUi.compactDesc", { percent: at })}
+          </div>
+        </div>
+        <Switch
+          on={!off}
+          onChange={(on) => setOff(!on)}
+          label={t("main.settingsUi.compactTitle")}
+        />
+      </div>
+      {!off && (
+        <label
+          data-omc-compact-at=""
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 13,
+            marginBottom: 12,
+            paddingLeft: 16,
+          }}
+        >
+          <span style={{ color: T.muted }}>{t("main.settingsUi.compactAtLabel")}</span>
+          <select
+            style={select}
+            aria-label={t("main.settingsUi.compactAtAria")}
+            value={String(at)}
+            onChange={(e) => {
+              const next = Number(e.target.value);
+              setStored(next === COMPACT_AT ? null : next);
+            }}
+          >
+            {COMPACT_AT_CHOICES.map((pct) => (
+              <option key={pct} value={String(pct)}>
+                {pct === COMPACT_AT
+                  ? t("main.settingsUi.defaultSuffix", { text: `${pct}%` })
+                  : `${pct}%`}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+    </>
+  );
+}
+
 /**
  * The settings switch for the one-line recap on returning to a finished session, and the away bar
  * under it. Both are hints: the answer lands in the Asides ring, which is the box's, so whether to
@@ -9024,6 +9245,87 @@ function SteerCard({
   );
 }
 
+/**
+ * The nudge above the composer when a session's context is mostly full: how full, what the next
+ * prompt carries, and a Compact button that posts to the plugin's `/compact` route, which sends
+ * Claude's own `/compact` as the next prompt the way the bridged `/claude-compact` does. Not
+ * through the composer: a draft of `/claude-compact` submitted by script goes to Claude as that
+ * literal text, since dsh only turns a typed slash into a command chip (seen 2026-10-22).
+ */
+function CompactCard({
+  percent,
+  tokens,
+  onCompact,
+  onDismiss,
+}: {
+  percent: number;
+  tokens: number;
+  onCompact: () => void;
+  onDismiss: () => void;
+}) {
+  useLocale();
+  return (
+    <div
+      data-omc-compact-card=""
+      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a live notice, not a form result, which is what <output> is for
+      role="status"
+      style={{
+        boxSizing: "border-box",
+        background: "var(--dsw-specific-tip, var(--dsw-alias-bg-base, transparent))",
+        border: "0.5px solid var(--dsw-alias-border-l1, rgba(217,119,87,.4))",
+        borderRadius: "12px 12px 0 0",
+        padding: "8px 10px",
+        fontSize: 13,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span
+          style={{ color: percent >= 90 ? T.err : T.warn, flex: "0 0 auto" }}
+          aria-hidden="true"
+        >
+          ●
+        </span>
+        <span style={{ flex: "1 1 14em", minWidth: 0 }}>
+          {t("main.compact.full", { percent: Math.floor(percent), tokens: kTokens(tokens) })}
+        </span>
+        <span style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+          <button
+            type="button"
+            data-omc-compact-now=""
+            onClick={onCompact}
+            style={{
+              background: "var(--dsw-alias-bg-elevated, transparent)",
+              border: `0.5px solid ${T.border}`,
+              borderRadius: 6,
+              padding: "2px 8px",
+              cursor: "pointer",
+              color: T.text,
+              fontSize: 12,
+            }}
+          >
+            {t("main.compact.now")}
+          </button>
+          <button
+            type="button"
+            aria-label={t("main.compact.dismissAria")}
+            title={t("main.compact.dismissAria")}
+            onClick={onDismiss}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              padding: "0 2px",
+              color: T.faint,
+            }}
+          >
+            ×
+          </button>
+        </span>
+      </div>
+    </div>
+  );
+}
+
 /** The one-line notice above the composer when the API grades a limit the session's model counts
  *  against as critical. The API grades a window critical before it is full (Fable weekly at 91%,
  *  2026-09-27), so the card says "reached" only at 100% and gives the percentage otherwise.
@@ -9155,46 +9457,51 @@ function SuggestionCard({
         >
           {text}
         </span>
-        {/* Disabled while folded: a card that is out of sight must not take the Tab key either. */}
-        <button
-          type="button"
-          style={btn}
-          data-omc-suggestion-use=""
-          disabled={folded}
-          onClick={onUse}
-        >
-          {t("main.suggestion.use")}
-        </button>
-        {onSend && (
+        {/* One cluster, pushed right: at phone width the text takes the first line and the
+            three buttons move to the next together, instead of Use staying up and Send and the
+            close dropping alone (owner's phone, 2026-10-21). */}
+        <span style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+          {/* Disabled while folded: a card that is out of sight must not take the Tab key either. */}
           <button
             type="button"
             style={btn}
-            data-omc-suggestion-send=""
+            data-omc-suggestion-use=""
             disabled={folded}
-            onClick={onSend}
+            onClick={onUse}
           >
-            {t("main.suggestion.send")}
+            {t("main.suggestion.use")}
           </button>
-        )}
-        <button
-          type="button"
-          aria-label={t("main.suggestion.dismissAria")}
-          title={t("main.suggestion.dismiss")}
-          data-omc-suggestion-dismiss=""
-          disabled={folded}
-          onClick={onDismiss}
-          style={{
-            background: "none",
-            border: "none",
-            padding: "2px 4px",
-            cursor: "pointer",
-            color: "inherit",
-            font: "inherit",
-            lineHeight: 1,
-          }}
-        >
-          ×
-        </button>
+          {onSend && (
+            <button
+              type="button"
+              style={btn}
+              data-omc-suggestion-send=""
+              disabled={folded}
+              onClick={onSend}
+            >
+              {t("main.suggestion.send")}
+            </button>
+          )}
+          <button
+            type="button"
+            aria-label={t("main.suggestion.dismissAria")}
+            title={t("main.suggestion.dismiss")}
+            data-omc-suggestion-dismiss=""
+            disabled={folded}
+            onClick={onDismiss}
+            style={{
+              background: "none",
+              border: "none",
+              padding: "2px 4px",
+              cursor: "pointer",
+              color: "inherit",
+              font: "inherit",
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        </span>
       </div>
     </div>
   );
@@ -9776,6 +10083,56 @@ function AsideBubble({
   // so, but dsh's own send empties the box first, and a card that unfolded in between read as
   // the guess coming back. Read at render; the poll re-renders this once a second while running.
   const running = ctx.sessions.list.getSnapshot()?.byId[sessionId]?.running === true;
+  // The context nudge: read once the turn is over (mid-turn the CLI declines the read), and
+  // again at each session switch. The tens bucket dismissed is this tab's memory, so the card
+  // returns at the next 10 % and not before. `loadContext` is the meter popover's cached read;
+  // shortcut: up to 10 s stale after a turn, fresh enough for a threshold.
+  const [compactOff] = useHintFlag("compactNudgeOff");
+  // The threshold is a hint too (`compactNudgeAt`, percent), so a box can move it through
+  // POST /hints; the switch card names the default.
+  const [compactAtHint] = useHintValue("compactNudgeAt");
+  const compactAt = compactThreshold(compactAtHint);
+  const [context, setContext] = useState<{ percentage: number; totalTokens: number } | null>(null);
+  const [compactDismissed, setCompactDismissed] = useState(-1);
+  useEffect(() => {
+    if (compactOff || running) return;
+    let live = true;
+    // A beat after the turn ends, and past `loadContext`'s cache: the read taken at mount, before
+    // any process was up, answered "no live process" and a cached copy of that hid the card for
+    // the turn that followed (seen 2026-10-22 in the sweep check).
+    const timer = setTimeout(() => {
+      // SAFETY: the body is our own JSON route; both shapes carry `ok`
+      const read = fetch(`${ROUTE}/context?session=${encodeURIComponent(sessionId)}`).then(
+        (r) => r.json() as Promise<ContextReply>,
+      );
+      void read
+        .then((r) => {
+          if (live)
+            setContext(r.ok ? { percentage: r.percentage, totalTokens: r.totalTokens } : null);
+        })
+        .catch(() => {});
+    }, 1500);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [sessionId, running, compactOff]);
+  const compactBucket = context ? Math.floor(context.percentage / 10) : -1;
+  const compactCard =
+    !compactOff &&
+    context !== null &&
+    context.percentage >= compactAt &&
+    compactBucket !== compactDismissed
+      ? context
+      : null;
+  // The Run button on shell snippets lives outside React (a body scan); it borrows this entry's
+  // composer while the entry is on screen.
+  useEffect(() => {
+    dockComposer = inputActions ?? null;
+    return () => {
+      dockComposer = null;
+    };
+  }, [inputActions]);
   const [foldHold, setFoldHold] = useState(false);
   const wasTyping = useRef(false);
   useEffect(() => {
@@ -9798,7 +10155,8 @@ function AsideBubble({
     !claudeUpdate &&
     !limitCard &&
     !anySteers &&
-    !suggestionCard
+    !suggestionCard &&
+    !compactCard
   )
     return null;
 
@@ -9863,6 +10221,21 @@ function AsideBubble({
               : undefined
           }
           onDismiss={() => setSuggestionHidden(suggestionCard)}
+        />
+      )}
+      {compactCard !== null && (
+        <CompactCard
+          percent={compactCard.percentage}
+          tokens={compactCard.totalTokens}
+          onCompact={() => {
+            void fetch(`${ROUTE}/compact`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ session: sessionId }),
+            }).catch(() => {});
+            setCompactDismissed(compactBucket);
+          }}
+          onDismiss={() => setCompactDismissed(compactBucket)}
         />
       )}
       {limitCard && (
@@ -10420,6 +10793,10 @@ const COST_DIALOG_CSS =
   "[data-omc-cost-details]{color:var(--dsw-alias-label-tertiary);grid-template-columns:minmax(76px,auto) minmax(0,1fr);gap:6px 16px;margin:0;display:grid}" +
   "[data-omc-cost-details] dt,[data-omc-cost-details] dd{min-width:0;margin:0}" +
   "[data-omc-cost-details] dd{color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;text-align:right}" +
+  // dsh's tooltip look (its bubble class is hashed, so the rules are copied onto our own hook,
+  // on the same tokens): fixed, above the anchor, centred by the transform.
+  "[data-omc-tip]{display:inline-flex;align-items:center;position:fixed;z-index:1100;width:max-content;max-width:50vw;padding:3px 7px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-tooltip-bg);color:var(--dsw-static-neutral-bluish-00);font-size:13px;line-height:20px;white-space:pre-line;overflow-wrap:break-word;pointer-events:none;transform:translate(-50%,-100%)}" +
+  "[data-omc-tip][data-side=bottom]{transform:translate(-50%)}" +
   "[data-omc-cost-guard]{margin-top:10px;padding-top:8px;border-top:1px solid var(--dsw-alias-border-l1);display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px}" +
   "[data-omc-cost-guard] label{display:inline-flex;align-items:center;gap:4px}" +
   "[data-omc-cost-guard] input{width:64px;font:inherit;color:inherit;background:var(--dsw-alias-bg-module-platform,rgba(128,128,128,.1));border:0;border-radius:6px;padding:2px 6px}" +
@@ -10513,6 +10890,7 @@ export function apply(ctx: ClientCtx) {
   watchContextMeter(ctx);
   watchEventStream(ctx);
   watchTurnStatus(ctx);
+  watchRunButtons(ctx);
   watchSessionNotices(ctx);
   watchSessionSpinners(ctx);
   watchUltrathink(ctx);
@@ -10603,6 +10981,7 @@ export function apply(ctx: ClientCtx) {
         <WorkspaceModelSwitch />
         <ToolRowsSwitch />
         <SuggestionSwitch />
+        <CompactNudgeSwitch />
         {/* The switches that start off sit together after the ones that start on, so the card reads
             as what the plugin does by default first, then what you can add to it. The proxy control
             keeps company with them rather than with the spend field it used to precede: it answers
