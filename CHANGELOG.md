@@ -6,6 +6,11 @@ Versions from 1.0.0 up are on npm. Everything below 1.0.0 was released from the 
 
 ## [Unreleased]
 
+### Fixed
+
+- A box that has not run a Claude session yet lists the models its Claude Code offers, not the built-in table, which predates Opus, Sonnet and Haiku 5.5. That table was the first listing whenever there was no `cli-models.json` from an earlier session and no login file the Models API could use (on macOS Claude Code keeps the login in the Keychain). Now the first listing of a boot starts one short-lived `claude -p`, sends it `list_models` and nothing else, so no model is called. It waits at most 5 seconds and saves the answer for the next boot. A CLI that is missing or logged out leaves the listing as it was, and an ssh box still learns its models from its first session. Thanks to @namastex888 (#183).
+- A CLI row for a model newer than the built-in table keeps its own id and name. Rows matched a known model by prefix, so Opus 5.5 (`claude-opus-5-5`) showed up under Opus 5's id as "Claude Opus 5". Only the same id, or that id with a date suffix, matches now. Thanks to @namastex888 (#183).
+
 ## [1.5.5] - 2026-10-22
 
 dsh: runs on 0.2.0-rc.1 through 0.2.1-rc.2; built and tested on 0.2.1-rc.2.
