@@ -1,6 +1,6 @@
 {
   "name": "dsh-oh-my-claude",
-  "version": "1.5.6",
+  "version": "1.5.6-omni.1",
   "type": "module",
   "description": "Claude Code CLI as an LLM provider for dsh (DeepSeek Harness): live model list, per-session resume, approval relay, images, a memory/rewind/changes panel, and workspaces on remote SSH boxes",
   "icon": "icon.svg",
@@ -42,7 +42,6 @@
     "build:server": "rm -rf lib/server && tsc -p tsconfig.build.json",
     "build:client": "NODE_ENV=production bun build src/client/index.tsx --format=cjs --target=browser --minify --outfile=lib/client.js --external react --external react/jsx-runtime --external react-dom --external '@deepseek-ai/*' --banner='window.__ModuleLoader__.load({ id: \"dsh-oh-my-claude\", factory: (require) => { var module = { exports: {} }; var exports = module.exports;' --footer='return module.exports; } });'",
     "build": "bun run build:server && bun run build:client",
-    "prepare": "bun run build",
     "validate": "bun tools/validate.ts"
   },
   "dependencies": {},
@@ -76,6 +75,7 @@
     "locale",
     "icon.svg",
     "README.md",
+    "NOTICE.md",
     "CHANGELOG.md",
     "cordis.patch.yml"
   ],
@@ -109,13 +109,13 @@
       "optional": true
     }
   },
-  "homepage": "https://github.com/lcestou/dsh-oh-my-claude#readme",
+  "homepage": "https://github.com/automagik-genie/dsh-oh-my-claude#readme",
   "bugs": {
-    "url": "https://github.com/lcestou/dsh-oh-my-claude/issues"
+    "url": "https://github.com/automagik-genie/dsh-oh-my-claude/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lcestou/dsh-oh-my-claude.git"
+    "url": "git+https://github.com/automagik-genie/dsh-oh-my-claude.git"
   },
   "license": "MIT",
   "types": "lib/server/adapter.d.ts",
