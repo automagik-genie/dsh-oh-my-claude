@@ -26,7 +26,6 @@ import {
   revive,
 } from "./shared.js";
 import { themeSplitPatch, hasTheme } from "./theme.js";
-import { PluginUpdateBadge } from "./update-pill.js";
 import { ReportBlock } from "./report.js";
 import { ChangelogBlock } from "./changelog.js";
 import { Spark } from "./spark.js";
@@ -315,11 +314,8 @@ export function apply(ctx: ClientCtx) {
           <h2 id="dsh-oh-my-claude-heading" style={{ margin: 0, fontSize: 18 }}>
             Oh My Claude
           </h2>
-          {/* A newer plugin on npm is a fact about the plugin, so it sits by its name, not in a
-              box row: the one place everyone who opens this section looks. */}
-          <span style={{ marginLeft: "auto" }}>
-            <PluginUpdateBadge />
-          </span>
+          {/* The Omni fork ships through Omni's market and app, pinned to a reviewed commit, so it
+              shows no npm update pill: that pill would point at the upstream package instead. */}
         </div>
         <StarLine />
         <ThemeSwitch />

@@ -82,21 +82,6 @@ const loadStatus = (): Promise<{ latest?: string; update?: string; stars?: numbe
   return p;
 };
 
-/** The pill beside the Settings heading, or nothing while the plugin is current. */
-export function PluginUpdateBadge() {
-  const [upd, setUpd] = useState<{ latest: string; command: string } | null>(null);
-  useEffect(() => {
-    let live = true;
-    void loadStatus().then((s) => {
-      if (live && s.latest && s.update) setUpd({ latest: s.latest, command: s.update });
-    });
-    return () => {
-      live = false;
-    };
-  }, []);
-  return upd ? <UpdatePill latest={upd.latest} command={upd.command} /> : null;
-}
-
 /** A quiet one-line nudge under the Settings heading: the live star count and a link to the repo,
  *  where the Star button is one click for anyone signed in to github.com. Nobody can star from
  *  here, so this is a link and not a button. Dismissible for good on this box. */

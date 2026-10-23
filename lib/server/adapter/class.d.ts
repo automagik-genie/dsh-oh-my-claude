@@ -311,6 +311,11 @@ export declare class ClaudeCodeAdapter extends LlmAdapter {
      * handler hands the line to Claude as the next prompt, where the CLI expands the skill or
      * custom command the way the terminal does; dsh keeps its own command of the same name.
      */
+    /** The refusal a command owned here answers with in a session that does not run on Claude Code. */
+    notClaude(agent: Agent, command: string): {
+        kind: "error";
+        text: string;
+    } | undefined;
     bridgeCommands(names: string[], agent: Agent | undefined): void;
     /** The effective mode for a session and the stored override, for the header chip. */
     /**
