@@ -1197,6 +1197,9 @@ export class ClaudeCodeAdapter extends LlmAdapter {
 
   /** Claude slash commands already registered as dsh commands, name → disposer. */
   readonly bridged = new Map<string, () => void>();
+  /** Names dsh serves as skills of its own (`~/.agents/skills` and dsh's other user roots): the
+   *  bridge leaves them to dsh, which expands a typed `/name` itself on every model. */
+  readonly dshSkills = new Set<string>();
   /** Sessions already warned that `toolsInline: false` is ignored on a versioned session format. */
   readonly rowsRefused = new Set<string>();
   /** Terminal exchanges the watcher found, by dsh session, each shown as one turn of its own. */
@@ -1309,6 +1312,34 @@ export class ClaudeCodeAdapter extends LlmAdapter {
     };
   }
 
+  /**
+   * Hand every bridged name dsh's skill registry serves back to dsh. The registration is host-wide
+   * while dsh's skill roots are a preset's layer, so the lookup takes the agent's scope; it asks
+   * for the user roots only (no `cwd`), because one project's skill must not unbridge the name for
+   * a session in another. Without an agent (a catalog restored at boot) nothing is decided: the
+   * next init frame carries one. A lookup that fails keeps the bridge, whose handler still works
+   * on every model.
+   */
+  async yieldToDshSkills(agent: Agent | undefined) {
+    const skills = this.ctx?.get?.("skills");
+    if (skills === undefined || agent === undefined) return;
+    const yielded: string[] = [];
+    // Deleting the entry being visited is safe while iterating a Map.
+    for (const [cmd, dispose] of this.bridged) {
+      try {
+        if ((await skills.get(cmd, { scope: agent })) === undefined) continue;
+      } catch {
+        continue;
+      }
+      dispose();
+      this.bridged.delete(cmd);
+      this.dshSkills.add(cmd);
+      yielded.push(`/${cmd}`);
+    }
+    if (yielded.length > 0)
+      this.log("info", `command bridge: ${yielded.join(", ")} left to dsh's own skills`);
+  }
+
   /** The refusal a command owned here answers with in a session that does not run on Claude Code. */
   notClaude(agent: Agent, command: string) {
     return claudeOnlyRefusal(this.sessionProvider(agent.session?.id ?? String(agent.id)), command);
@@ -1328,7 +1359,12 @@ export class ClaudeCodeAdapter extends LlmAdapter {
     (globalThis as { [COMMAND_CATALOG]?: string[] })[COMMAND_CATALOG] = names;
     const failed: string[] = [];
     for (const cmd of names) {
-      if (ClaudeCodeAdapter.OWN_COMMANDS.has(cmd) || this.bridged.has(cmd)) continue;
+      if (
+        ClaudeCodeAdapter.OWN_COMMANDS.has(cmd) ||
+        this.bridged.has(cmd) ||
+        this.dshSkills.has(cmd)
+      )
+        continue;
       // Claude's own name where dsh has no answer for it: `/llama` reads as the command it is,
       // where `/claude-llama` read as some other command entirely. The prefix is the fallback.
       //
@@ -1405,6 +1441,7 @@ export class ClaudeCodeAdapter extends LlmAdapter {
         "warn",
         `command bridge: ${failed.length} of ${names.length} not registered (first: ${failed[0]})`,
       );
+    void this.yieldToDshSkills(agent);
     // globalThis carries the catalog across a hot reload; the file carries it across a restart,
     // which adopts the running Claude and so never sees a second init frame.
     //
