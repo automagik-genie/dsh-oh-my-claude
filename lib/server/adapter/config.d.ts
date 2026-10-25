@@ -83,6 +83,7 @@ export declare const Config: z<Schemastery.ObjectS<{
     redactSecrets: z<boolean, boolean>;
     persistTodos: z<boolean, boolean>;
     continueAfterLimit: z<boolean, boolean>;
+    statusPage: z<boolean, boolean>;
     debug: z<boolean, boolean>;
     approvals: z<boolean, boolean>;
     processIdleMs: z<number, number>;
@@ -116,6 +117,7 @@ export declare const Config: z<Schemastery.ObjectS<{
     redactSecrets: z<boolean, boolean>;
     persistTodos: z<boolean, boolean>;
     continueAfterLimit: z<boolean, boolean>;
+    statusPage: z<boolean, boolean>;
     debug: z<boolean, boolean>;
     approvals: z<boolean, boolean>;
     processIdleMs: z<number, number>;
