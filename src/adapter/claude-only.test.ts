@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { claudeOnlyRefusal } from "./claude-only.js";
+import { claudeOnlyRefusal, runsOnClaude } from "./claude-only.js";
 
 // A Claude Code session keeps the command, a box's instance included.
 assert.equal(claudeOnlyRefusal("claude-code", "btw"), undefined);
@@ -13,3 +13,9 @@ const refusal = claudeOnlyRefusal("deepseek-official", "temporary");
 assert.equal(refusal?.kind, "error");
 assert.match(refusal?.text ?? "", /\/temporary works in Claude Code sessions/);
 assert.match(refusal?.text ?? "", /deepseek-official/);
+
+// What decides it: Claude Code and a box's instance run there, an unread provider counts as there.
+assert.equal(runsOnClaude("claude-code"), true);
+assert.equal(runsOnClaude("claude-code-devbox"), true);
+assert.equal(runsOnClaude(undefined), true);
+assert.equal(runsOnClaude("openai-codex"), false);

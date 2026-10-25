@@ -238,7 +238,8 @@ import {
   REVIVE_KEEP,
   SELECTION_EXPLAIN,
 } from "./asides.js";
-import { claudeOnlyRefusal } from "./claude-only.js";
+import { claudeOnlyRefusal, runsOnClaude } from "./claude-only.js";
+import { claudeCommandText, skillContent } from "./skill-line.js";
 import {
   claudeSessionExists,
   claudeSessionId,
@@ -1253,15 +1254,72 @@ export class ClaudeCodeAdapter extends LlmAdapter {
   >();
 
   /**
-   * Register Claude Code's slash commands (from the CLI's init frame) as dsh `/commands`. The
-   * handler hands the line to Claude as the next prompt, where the CLI expands the skill or
-   * custom command the way the terminal does; dsh keeps its own command of the same name.
+   * A bridged command typed in a session on another model. The line goes to that model as the
+   * user's turn, as it goes to Claude Code, rather than dead-ending: the command is host-wide, so
+   * `/wish` in a Genie on openai-codex or a DeepSeek chat lands here. dsh expands a skill it has
+   * itself; one only Claude Code has goes with its own instructions, read from the file the CLI
+   * would expand, in the shape dsh hands a skill to a model.
    */
+  async handToSessionModel(
+    target: Agent,
+    cmd: string,
+    rawInput: string,
+    attachments: readonly unknown[],
+    provider: string | undefined,
+  ) {
+    const line = `/${cmd}${rawInput}`;
+    const cwd = this.sessionCwd(target.session?.id ?? String(target.id));
+    let dshHasIt = false;
+    try {
+      dshHasIt = (await this.ctx?.get?.("skills")?.get(cmd, { cwd, scope: target })) !== undefined;
+    } catch {
+      // A lookup that fails reads as a skill dsh does not have: the instructions go along.
+    }
+    const own = dshHasIt
+      ? undefined
+      : await claudeCommandText(cmd, rawInput, cwd, this.realClaudeHome);
+    target.followup(
+      createUserMessage({
+        // SAFETY: the attachments are the content blocks dsh admitted for this command's input
+        content: [{ type: "text", text: line }, ...(attachments as any[])],
+        source: { kind: "user" },
+      }),
+    );
+    if (own) {
+      const source = {
+        kind: "skill-invocation",
+        name: cmd,
+        form: "instructions",
+      };
+      target.followup(
+        createUserMessage({
+          content: [{ type: "text", text: skillContent(cmd, own.path, own.body) }],
+          // SAFETY: dsh-llm 0.1.6's MessageSource predates the producer-owned kinds; dsh's own skill
+          // injection (dsh-tool-skill) writes exactly this source, and its chat draws it folded.
+          source: source as MessageSource,
+        }),
+      );
+    }
+    const model = provider ?? "this session's model";
+    return {
+      kind: "success" as const,
+      text: own
+        ? `${line} sent to ${model}, with Claude Code's /${cmd} instructions`
+        : `${line} sent to ${model}`,
+    };
+  }
+
   /** The refusal a command owned here answers with in a session that does not run on Claude Code. */
   notClaude(agent: Agent, command: string) {
     return claudeOnlyRefusal(this.sessionProvider(agent.session?.id ?? String(agent.id)), command);
   }
 
+  /**
+   * Register Claude Code's slash commands (from the CLI's init frame) as dsh `/commands`. The
+   * handler hands the line to Claude as the next prompt, where the CLI expands the skill or
+   * custom command the way the terminal does; dsh keeps its own command of the same name. In a
+   * session on another model the line goes to that model instead (handToSessionModel).
+   */
   bridgeCommands(names: string[], agent: Agent | undefined) {
     // Optional service: cordis rejects `ctx.commands` unless it is in `inject`; `get` does not.
     const commands = this.ctx?.get("commands");
@@ -1290,8 +1348,9 @@ export class ClaudeCodeAdapter extends LlmAdapter {
           // provider sees it, and images reach Claude through imageRefs.
           input: { hint: "<arguments>", attachments: true },
           handler: ({ agent: target, rawInput, attachments }) => {
-            const refused = this.notClaude(target, cmd);
-            if (refused) return refused;
+            const provider = this.sessionProvider(target.session?.id ?? String(target.id));
+            if (!runsOnClaude(provider))
+              return this.handToSessionModel(target, cmd, rawInput, attachments, provider);
             const line = `/${cmd}${rawInput}`;
             const title = renameTitle(cmd, rawInput);
             // dsh's title goes first: sending the line and then failing would leave Claude renamed

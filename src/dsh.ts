@@ -27,6 +27,14 @@ export const PERMISSION_MODE_OVERRIDES = Symbol.for("dsh-oh-my-claude.permission
 
 /** The same brand dsh-llm puts on GenerateOptions.sessionId, so ids flow through without casts. */
 export type SessionId = NonNullable<GenerateOptions["sessionId"]>;
+
+/** A skill dsh's registry resolved; only whether there is one is read. */
+export interface DshSkill {
+  name: string;
+}
+
+/** What a dsh `/command` handler answers with. */
+export type CommandResult = { kind: "success"; text?: string } | { kind: "error"; text: string };
 /** Any JSON document; what MCP tool arguments and relay payloads are made of. */
 export type JsonValue =
   | string
@@ -407,6 +415,13 @@ export interface PluginContext {
   get(name: "commands"): PluginContext["commands"];
   get(name: "sessionTitle"): PluginContext["sessionTitle"];
   get(name: "workspaceRegistry"): WorkspaceRegistry | undefined;
+  /** dsh's skill registry (dsh-skill-filesystem's roots, `~/.agents/skills` among them), read only
+   *  to tell whether dsh expands a `/name` line itself. */
+  get(
+    name: "skills",
+  ):
+    | { get(name: string, lookup: { cwd?: string; scope?: Agent }): Promise<DshSkill | undefined> }
+    | undefined;
   /**
    * Mirrors: dsh-plugin-desktop/src/desktop-browser-access.ts (the community DSH Desktop shell).
    * Present only when dsh runs under that shell's Electron launcher, whose web server then answers
@@ -430,7 +445,8 @@ export interface PluginContext {
         /** The admitted image and file blocks, in submission order; empty unless declared. */
         attachments: readonly ContentBlock[];
         signal: AbortSignal;
-      }) => { kind: "success"; text?: string } | { kind: "error"; text: string };
+        // dsh's executor awaits the result (`await Promise.resolve(output)`), so a handler may be async.
+      }) => CommandResult | Promise<CommandResult>;
     }): () => void;
     find(agent: Agent, name: string): object | undefined;
   };
