@@ -307,15 +307,27 @@ export declare class ClaudeCodeAdapter extends LlmAdapter {
         since: number;
     }>;
     /**
-     * Register Claude Code's slash commands (from the CLI's init frame) as dsh `/commands`. The
-     * handler hands the line to Claude as the next prompt, where the CLI expands the skill or
-     * custom command the way the terminal does; dsh keeps its own command of the same name.
+     * A bridged command typed in a session on another model. The line goes to that model as the
+     * user's turn, as it goes to Claude Code, rather than dead-ending: the command is host-wide, so
+     * `/wish` in a Genie on openai-codex or a DeepSeek chat lands here. dsh expands a skill it has
+     * itself; one only Claude Code has goes with its own instructions, read from the file the CLI
+     * would expand, in the shape dsh hands a skill to a model.
      */
+    handToSessionModel(target: Agent, cmd: string, rawInput: string, attachments: readonly unknown[], provider: string | undefined): Promise<{
+        kind: "success";
+        text: string;
+    }>;
     /** The refusal a command owned here answers with in a session that does not run on Claude Code. */
     notClaude(agent: Agent, command: string): {
         kind: "error";
         text: string;
     } | undefined;
+    /**
+     * Register Claude Code's slash commands (from the CLI's init frame) as dsh `/commands`. The
+     * handler hands the line to Claude as the next prompt, where the CLI expands the skill or
+     * custom command the way the terminal does; dsh keeps its own command of the same name. In a
+     * session on another model the line goes to that model instead (handToSessionModel).
+     */
     bridgeCommands(names: string[], agent: Agent | undefined): void;
     /** The effective mode for a session and the stored override, for the header chip. */
     /**

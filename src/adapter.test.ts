@@ -168,7 +168,7 @@ const blockTextOf = (c: StreamChunk | undefined): string => {
 import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import { homedir } from "node:os";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { serverText } from "./locale.js";
 import { join as joinPath } from "node:path";
 import { STATE_DIR } from "./state.js";
@@ -4512,6 +4512,104 @@ console.log("command-catalog-live ok");
   await a.applyUltracode(proc, "never-set");
   assert.deepEqual(sent, []);
   console.log("ultracode ok");
+}
+// A bridged skill typed in a session on another model is not a dead end: the line goes to that
+// model as the user's turn, with the instructions Claude Code would have expanded when dsh has no
+// copy of the skill. The owner's `/wish` in a Genie on openai-codex was refused here (2026-10-25).
+{
+  type Bridged = (i: {
+    agent: unknown;
+    rawInput: string;
+    attachments: unknown[];
+  }) => Promise<{ kind: string; text?: string }> | { kind: string; text?: string };
+  const handlers = new Map<string, Bridged>();
+  let dshSkills: string[] = [];
+  const commands = {
+    register: (d: { name: string; handler: Bridged }) => (
+      handlers.set(d.name, d.handler),
+      () => {}
+    ),
+    find: () => undefined,
+  };
+  const base = {
+    on() {},
+    logger: { info() {}, warn() {} },
+    get: (n: string) =>
+      n === "commands"
+        ? commands
+        : n === "skills"
+          ? { get: async (name: string) => (dshSkills.includes(name) ? { name } : undefined) }
+          : undefined,
+  };
+  const home = await mkdtemp(joinPath(tmpdir(), "omc-skill-home-"));
+  const project = await mkdtemp(joinPath(tmpdir(), "omc-skill-project-"));
+  await mkdir(joinPath(home, "skills", "wish"), { recursive: true });
+  await writeFile(
+    joinPath(home, "skills", "wish", "SKILL.md"),
+    "---\nname: wish\ndescription: Deliver one task\n---\n\n# Wish\n\nDeliver the task: $ARGUMENTS\n",
+  );
+  await mkdir(joinPath(project, ".claude", "commands"), { recursive: true });
+  await writeFile(joinPath(project, ".claude", "commands", "ship.md"), "Ship $ARGUMENTS now.\n");
+  const a = new ClaudeCodeAdapter(fakeCtx(base), Config({ commandBridge: true }));
+  a.realClaudeHome = home;
+  let provider: string | undefined = "openai-codex";
+  a.sessionProvider = () => provider;
+  a.sessionCwd = () => project;
+  a.bridgeCommands(["wish", "ship", "plugin:skill"], undefined);
+  const sent: {
+    source: { kind: string; name?: string };
+    content: { type: string; text?: string }[];
+  }[] = [];
+  const target = { id: "genie", session: { id: "genie" }, followup: (m: any) => sent.push(m) };
+  const run = (name: string, rawInput: string) =>
+    handlers.get(name)!({ agent: target, rawInput, attachments: [] });
+
+  const wish = await run("wish", " create delegation-test.txt");
+  assert.equal(wish.kind, "success", `not refused: ${wish.text}`);
+  assert.match(wish.text ?? "", /sent to openai-codex, with Claude Code's \/wish instructions/);
+  assert.deepEqual(
+    sent.map((m) => m.source.kind),
+    ["user", "skill-invocation"],
+    "the typed line, then the skill's instructions",
+  );
+  assert.equal(sent[0]?.content[0]?.text, "/wish create delegation-test.txt");
+  const instructions = sent[1]?.content[0]?.text ?? "";
+  assert.match(instructions, /^<skill_content name="wish">/);
+  assert.match(
+    instructions,
+    /Deliver the task: create delegation-test\.txt/,
+    "$ARGUMENTS filled in",
+  );
+  assert.doesNotMatch(instructions, /description: Deliver one task/, "frontmatter left out");
+  assert.ok(
+    instructions.includes(`Base directory for this skill: ${joinPath(home, "skills", "wish")}`),
+  );
+
+  // A project's own custom command is found too.
+  sent.length = 0;
+  await run("ship", " v2");
+  assert.match(sent[1]?.content[0]?.text ?? "", /Ship v2 now\./);
+
+  // A skill dsh has itself: dsh expands the `/name` line, so only the line goes.
+  sent.length = 0;
+  dshSkills = ["wish"];
+  provider = "deepseek-official";
+  const own = await run("wish", " again");
+  assert.equal(own.text, "/wish again sent to deepseek-official");
+  assert.deepEqual(
+    sent.map((m) => m.source.kind),
+    ["user"],
+  );
+
+  // A plugin's skill has no file here: the line still goes, alone.
+  sent.length = 0;
+  dshSkills = [];
+  assert.equal((await run("plugin:skill", "")).kind, "success");
+  assert.deepEqual(
+    sent.map((m) => m.source.kind),
+    ["user"],
+  );
+  console.log("bridged-skill-other-model ok");
 }
 console.log("command-bridge ok");
 {
