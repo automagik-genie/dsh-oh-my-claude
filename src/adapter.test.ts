@@ -4611,6 +4611,60 @@ console.log("command-catalog-live ok");
   );
   console.log("bridged-skill-other-model ok");
 }
+// A name dsh serves as a skill of its own is left to dsh: dsh expands a typed `/wish` itself, on
+// every model, so the bridge never claims it once a lookup in the session's scope finds it.
+{
+  const registered: string[] = [];
+  const disposed: string[] = [];
+  const lookups: unknown[] = [];
+  const commands = {
+    register: (d: { name: string }) => {
+      registered.push(d.name);
+      return () => disposed.push(d.name);
+    },
+    find: () => undefined,
+  };
+  const base = {
+    on() {},
+    logger: { info() {}, warn() {} },
+    get: (n: string) =>
+      n === "commands"
+        ? commands
+        : n === "skills"
+          ? {
+              get: async (name: string, lookup: unknown) => {
+                lookups.push(lookup);
+                return name === "wish" ? { name } : undefined;
+              },
+            }
+          : undefined,
+  };
+  const a = new ClaudeCodeAdapter(fakeCtx(base), Config({ commandBridge: true }));
+  a.stateDir = await mkdtemp(joinPath(tmpdir(), "omc-yield-"));
+  const agent = { id: "claude-session", session: { id: "claude-session" } };
+  // No agent yet (a catalog restored at boot): nothing is decided.
+  a.bridgeCommands(["wish", "llama"], undefined);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(a.bridged.has("wish"), true, "no scope to look in, so the bridge keeps it");
+  // The next init frame carries the session: dsh's own skill wins.
+  // SAFETY: the fake carries the fields the bridge reads
+  a.bridgeCommands(["wish", "llama"], agent as any);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(disposed, ["wish"], "the bridged /wish is unregistered");
+  assert.equal(a.bridged.has("wish"), false);
+  assert.equal(a.bridged.has("llama"), true, "a command dsh has no skill for stays bridged");
+  assert.deepEqual(
+    lookups.at(-1),
+    { scope: agent },
+    "the user roots, in the session's scope, no cwd",
+  );
+  // A later frame does not claim it again.
+  registered.length = 0;
+  // SAFETY: as above
+  a.bridgeCommands(["wish", "mint"], agent as any);
+  assert.deepEqual(registered, ["mint"]);
+  console.log("bridge-yields-to-dsh-skills ok");
+}
 console.log("command-bridge ok");
 {
   // Raw tool rows only on a format-0 session: dsh 0.1.5's migration refuses unadvertised
