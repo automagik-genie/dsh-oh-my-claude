@@ -214,6 +214,12 @@ export const Config = z.object({
     .description(
       "When a usage limit ends a turn, wait for the reset and continue the task on its own, as the CLI does",
     ),
+  statusPage: z
+    .boolean()
+    .default(false)
+    .description(
+      "When Anthropic answers a turn with a 5xx or 529, ask status.anthropic.com and add its note to the retry line (off in the Omni fork: nothing leaves the machine on its own)",
+    ),
   debug: z.boolean().default(false).description("Log spawn arguments (minus the prompt) per call"),
   approvals: z
     .boolean()

@@ -4665,10 +4665,11 @@ export class ClaudeCodeAdapter extends LlmAdapter {
       dshIds: proc.dshIds,
       relayed: proc.relayed,
       hostLabel: this.hostLabelFor(options.sessionId),
-      // A 5xx or 529 asks the status page once a minute; the note lands on the next retry line.
+      // A 5xx or 529 asks the status page once a minute when `statusPage` is on; the note lands
+      // on the next retry line. Off, only a reading already cached is used, so nothing is asked.
       statusNote: () => {
         const known = peekStatus();
-        if (known === undefined) void anthropicStatus();
+        if (known === undefined && this.config.statusPage) void anthropicStatus();
         return degradedNote(known);
       },
       log: this.log.bind(this),
