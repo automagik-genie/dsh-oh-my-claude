@@ -1,33 +1,9 @@
-// Offline self-check: bun src/no-network.test.ts. The Omni fork's no-telemetry rule ("don't send
-// anything to anyone"): nothing the plugin itself reads off the machine runs unless the person
-// turned it on, and the privacy switches set for dsh reach every Claude child, near or far.
+// Offline self-check: bun src/privacy-env.test.ts. The Omni fork's privacy rule (nothing that can
+// be used for training leaves the machine): the privacy switches set for dsh reach every Claude
+// child, near or far.
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { holdStartScript } from "./hold.js";
 import { childEnv, forwardedEnv, seamSpawner, sshInvocation } from "./process.js";
-import { claudeUpdatesOff, pluginStars } from "./sessions.js";
-
-// The Claude Code update check (downloads.claude.ai every 30 minutes) is off until turned on; the
-// upstream `claudeUpdateOff` flag no longer decides it.
-assert.equal(claudeUpdatesOff({}), true, "off by default");
-assert.equal(claudeUpdatesOff({ claudeUpdateOff: true }), true);
-assert.equal(claudeUpdatesOff({ claudeUpdateOn: true }), false, "on once the person turns it on");
-
-// The star count is a GitHub read nobody asked for: an empty hints store asks nothing.
-{
-  const dir = await mkdtemp(join(tmpdir(), "omc-no-network-"));
-  const hints = join(dir, "hints.json");
-  let asked = 0;
-  const read = async () => (asked++, 42);
-  assert.equal(await pluginStars(hints, read), undefined);
-  await writeFile(hints, JSON.stringify({ starOff: true }));
-  assert.equal(await pluginStars(hints, read), undefined);
-  assert.equal(asked, 0, "no GitHub read without starOn");
-  await writeFile(hints, JSON.stringify({ starOn: true }));
-  assert.equal(await pluginStars(hints, read), 42);
-}
 
 // The privacy switches the Automagik app sets for everything dsh spawns.
 const PRIVATE = {
@@ -86,4 +62,4 @@ assert.deepEqual(forwardedEnv(PRIVATE), [
   );
   assert.equal(env?.HOME, undefined, "still no dsh env leak");
 }
-console.log("no-network ok");
+console.log("privacy-env ok");

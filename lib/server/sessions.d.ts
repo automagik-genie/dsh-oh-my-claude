@@ -119,12 +119,9 @@ declare function pluginUpdate(hintsPath: string, dsh: string | null | undefined)
     latest: string;
     update: string;
 } | undefined>;
-/** Whether the Claude Code update feature is off: in the Omni fork, until the person turns it on
- *  (`claudeUpdateOn`), since every check asks downloads.claude.ai. */
-export declare const claudeUpdatesOff: (hints: Record<string, boolean | number>) => boolean;
 /** The repo's star count for the nudge in Settings, this box only. The dismiss flag (`starOff` in
  *  the hints store) turns the read off, so a person who hid the line pays no GitHub call. */
-export declare function pluginStars(hintsPath: string, read?: () => Promise<number | undefined>): Promise<number | undefined>;
+declare function pluginStars(hintsPath: string): Promise<number | undefined>;
 /** Another dsh server this panel can hop to; `token` is that box's dsh launch token. */
 export interface Box {
     name: string;

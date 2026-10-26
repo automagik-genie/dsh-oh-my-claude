@@ -383,30 +383,18 @@ async function pluginUpdate(
   dsh: string | null | undefined,
 ): Promise<{ latest: string; update: string } | undefined> {
   if (!PLUGIN_NAME || !PLUGIN_VERSION || !UPDATE_COMMAND) return undefined;
-  // Omni fork: no registry read unless the person turned the notice on (`updateCheckOn`).
-  if ((await readHints(hintsPath)).updateCheckOn !== true) return undefined;
+  if ((await readHints(hintsPath)).updateCheckOff === true) return undefined;
   const newest = await latestRelease(PLUGIN_NAME);
   if (!newest || !isNewer(PLUGIN_VERSION, newest.version)) return undefined;
   if (newest.dshFloor && dsh && !atLeast(dsh, newest.dshFloor)) return undefined;
   return { latest: newest.version, update: UPDATE_COMMAND };
 }
 
-/** Whether the Claude Code update feature is off: in the Omni fork, until the person turns it on
- *  (`claudeUpdateOn`), since every check asks downloads.claude.ai. */
-export const claudeUpdatesOff = (hints: Record<string, boolean | number>): boolean =>
-  hints.claudeUpdateOn !== true;
-
 /** The repo's star count for the nudge in Settings, this box only. The dismiss flag (`starOff` in
  *  the hints store) turns the read off, so a person who hid the line pays no GitHub call. */
-export async function pluginStars(
-  hintsPath: string,
-  read: () => Promise<number | undefined> = stars,
-): Promise<number | undefined> {
-  // Omni fork: the count is a GitHub read nobody asked for, so it is never fetched unless
-  // `starOn` is set by hand; the nudge shows without it.
-  const hints = await readHints(hintsPath);
-  if (hints.starOff === true || hints.starOn !== true) return undefined;
-  return read();
+async function pluginStars(hintsPath: string): Promise<number | undefined> {
+  if ((await readHints(hintsPath)).starOff === true) return undefined;
+  return stars();
 }
 
 const MAX_BOXES = 20;
@@ -2202,14 +2190,12 @@ export function registerSessionRoutes(
     updaters.set(host, made);
     return made;
   };
-  /** The Settings switch for the whole feature (`claudeUpdateOn` in the hints store): off means
-   *  no check, no card and no install; the Tune rows still show the history. The Omni fork has it
-   *  off until the person turns it on, since each check asks downloads.claude.ai: nothing leaves
-   *  the machine on its own. */
+  /** The Settings switch for the whole feature (`claudeUpdateOff` in the hints store): off means
+   *  no check, no card and no install; the Tune rows still show the history. */
   const updatesOff = async (): Promise<boolean> =>
     sshBoxesPath
-      ? claudeUpdatesOff(await readHints(join(dirname(sshBoxesPath), "hints.json")))
-      : true;
+      ? (await readHints(join(dirname(sshBoxesPath), "hints.json"))).claudeUpdateOff === true
+      : false;
   /** Every box: this one plus each saved ssh box; a box removed in Settings drops out. */
   const tick = async () => {
     if (await updatesOff()) return;
