@@ -957,10 +957,7 @@ export function ContextRowMask({
  *  server reads before it asks npm: off means no registry read at all, not a hidden pill. */
 export function UpdateNoticeSwitch() {
   useLocale();
-  // Omni fork: opt-in, so the box asks npm only once the person turns the notice on.
-  const [on, setOn] = useHintFlag("updateCheckOn");
-  const off = !on;
-  const setOff = (next: boolean) => setOn(!next);
+  const [off, setOff] = useHintFlag("updateCheckOff");
   return (
     <div
       data-omc-update-switch=""
@@ -995,10 +992,7 @@ const NESTED: CSSProperties = { ...nested, marginBottom: 12, fontSize: 13 };
  *  before every check: off means no pointer read, no card and no install, on every box. */
 export function ClaudeUpdateSwitch() {
   useLocale();
-  // Omni fork: opt-in, so the box asks downloads.claude.ai only once the person turns it on.
-  const [on, setOn] = useHintFlag("claudeUpdateOn");
-  const off = !on;
-  const setOff = (next: boolean) => setOn(!next);
+  const [off, setOff] = useHintFlag("claudeUpdateOff");
   return (
     <>
       <div

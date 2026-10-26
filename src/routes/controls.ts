@@ -126,10 +126,9 @@ export function controlsRoutes(ctx: RouteCtx): RouteHandler {
         const stale = (checkedAt ?? 0) < Date.now() - 30 * 60_000;
         // A Boxes row probes only a box the tick has never seen (the first minute after a
         // boot); after that the tick keeps it fresh.
-        // Switched off, only an explicit Check now (`now=1`) asks; opening the card does not.
         if (
           url.searchParams.get("now") === "1" ||
-          (stale && (hostParam === null || checkedAt === undefined) && !(await updatesOff()))
+          (stale && (hostParam === null || checkedAt === undefined))
         )
           await u.check();
         return json(res, 200, { ...u.state(), switchedOff: await updatesOff() });
