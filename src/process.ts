@@ -137,6 +137,10 @@ export interface SubprocessHandle {
   stderr: import("node:stream").Readable;
   done: Promise<{ exitCode: number | null; signal: string | null }>;
   terminate(): void;
+  /** The stdout line at `index` (0 for this handle's first line) was used by a turn, or consumed
+   *  on arrival. A keeper keeps a line until then and replays it to the next dsh; a plain child
+   *  has nothing to keep. */
+  ack?(index: number): void;
 }
 
 /** One line of the CLI's stream-json stdout, in the shapes this plugin reads. */
@@ -1423,6 +1427,9 @@ export function attachKeeper(dir: string, timeoutMs = 5000): Promise<SubprocessH
           resolveDone = r;
         });
         let settled = false;
+        // The keeper's number for each stdout line, by its index on this handle, until acked.
+        const numbers = new Map<number, number>();
+        let lineIndex = 0;
         const settle = (code: number | null, signal: string | null) => {
           if (settled) return;
           settled = true;
@@ -1431,14 +1438,19 @@ export function attachKeeper(dir: string, timeoutMs = 5000): Promise<SubprocessH
           resolveDone?.({ exitCode: code, signal });
         };
         createInterface({ input: sock, crlfDelay: Infinity }).on("line", (raw) => {
-          let msg: { t?: string; line?: string; code?: number | null; signal?: string | null };
+          let msg: { t?: string; line?: string; n?: number; code?: number | null; signal?: string | null };
           try {
             // SAFETY: the peer is this plugin's keeper.ts; fields are checked before use
             msg = JSON.parse(raw) as typeof msg;
           } catch {
             return;
           }
-          if (msg.t === "out" && typeof msg.line === "string") stdout.write(`${msg.line}\n`);
+          if (msg.t === "out" && typeof msg.line === "string") {
+            // A keeper from before acks sends no number; its lines are not kept, so nothing is acked.
+            if (typeof msg.n === "number") numbers.set(lineIndex, msg.n);
+            lineIndex++;
+            stdout.write(`${msg.line}\n`);
+          }
           else if (msg.t === "err" && typeof msg.line === "string") stderr.write(`${msg.line}\n`);
           else if (msg.t === "exit") settle(msg.code ?? null, msg.signal ?? null);
         });
@@ -1453,7 +1465,7 @@ export function attachKeeper(dir: string, timeoutMs = 5000): Promise<SubprocessH
             cb();
           },
         });
-        sock.write(`${JSON.stringify({ t: "hello" })}\n`);
+        sock.write(`${JSON.stringify({ t: "hello", acks: true })}\n`);
         resolve({
           stdin,
           stdout,
@@ -1461,6 +1473,12 @@ export function attachKeeper(dir: string, timeoutMs = 5000): Promise<SubprocessH
           done,
           terminate: () => {
             sock.write(`${JSON.stringify({ t: "kill" })}\n`);
+          },
+          ack: (index) => {
+            const n = numbers.get(index);
+            if (n === undefined) return;
+            numbers.delete(index);
+            if (!sock.destroyed) sock.write(`${JSON.stringify({ t: "ack", n })}\n`);
           },
         });
       });
@@ -1512,6 +1530,8 @@ export function lazyHandle(pending: Promise<SubprocessHandle>): SubprocessHandle
       killed = true;
       real?.terminate();
     },
+    // stdout is the real handle's piped through, so its line indexes are the real one's.
+    ack: (index) => real?.ack?.(index),
   };
 }
 
@@ -1680,6 +1700,8 @@ export class ClaudeProcess {
   relays: Map<string, RelayEvent>;
   exitCode: number | undefined;
   queue: LineQueue;
+  /** The stdout index of each line in `queue`, in order, for `used` once nextEvent takes it. */
+  queuedIndexes: number[] = [];
   child: SubprocessHandle;
   key?: string;
   resuming?: boolean;
@@ -1793,12 +1815,14 @@ export class ClaudeProcess {
       this.stderr = (this.stderr + d).slice(-2000);
     });
     const rl = createInterface({ input: this.child.stdout, crlfDelay: Infinity });
+    let lineIndex = 0;
     rl.on("line", (line) => {
+      const index = lineIndex++;
       // Consumed here, not queued: the frame lands after the result that ended the turn, when no
       // turn is reading, and a queued copy would open the next turn as an unknown event.
-      if (line.includes('"prompt_suggestion"') && this.noteSuggestion(line)) return;
+      if (line.includes('"prompt_suggestion"') && this.noteSuggestion(line)) return this.used(index);
       // Same reason: the frame lands at startup and after a rename, outside any turn.
-      if (line.includes('"session_title_changed"') && this.noteTitle(line)) return;
+      if (line.includes('"session_title_changed"') && this.noteTitle(line)) return this.used(index);
       // `"type":"result"` is how the CLI's JSON spells it; a result inside a tool's text would
       // need the space-free key too, and a false positive only lets a suggestion through early.
       if (line.includes('"type":"result"')) {
@@ -1810,11 +1834,13 @@ export class ClaudeProcess {
       if (this.controlListener && line.includes('"control_response"')) {
         try {
           // SAFETY: I/O boundary; the listener branches on `type` and ignores anything else
-          if (this.controlListener(JSON.parse(line) as ClaudeEvent)) return;
+          if (this.controlListener(JSON.parse(line) as ClaudeEvent)) return this.used(index);
         } catch {
           // not JSON: queue it like any other line
         }
       }
+      // Only nextEvent takes from the queue, and it takes lines in the order they were queued.
+      this.queuedIndexes.push(index);
       this.queue.push(line);
       this.noteIdleResult(line);
     });
@@ -1949,6 +1975,12 @@ export class ClaudeProcess {
     return n;
   }
 
+  /** Tell the child a stdout line was used: a keeper keeps a line until then, so a line a dsh
+   *  read but never used (its turn ended as it shut down) reaches the next dsh (automagik#62). */
+  used(index: number): void {
+    this.child.ack?.(index);
+  }
+
   /** Next parsed JSON line; plain text lines are kept in `stray` for error messages. Null when the
    *  process ended, `{ type: "timeout" }` when `timeoutMs` passed first. */
   async nextEvent(timeoutMs?: number): Promise<ClaudeEvent | null> {
@@ -1963,6 +1995,8 @@ export class ClaudeProcess {
       if (line === null) return null;
       if (line === TIMEOUT) return { type: "timeout" };
       if (typeof line === "object") return line; // injected by inject()
+      const index = this.queuedIndexes.shift();
+      if (index !== undefined) this.used(index);
       try {
         // SAFETY: this is the I/O boundary; a parsed line is treated as a CLI event and every
         // consumer branches on `type` with a logged fallback for shapes it does not know.
