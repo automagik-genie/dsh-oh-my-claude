@@ -847,12 +847,14 @@ export const lastModelOf = (folded: FoldedTranscript): string | undefined =>
 
 // Claude Code permission mode to dsh's built-in preset and the approval policy that preset
 // carries; its sandbox mode is the preset's own name. A box that redefined these presets reads the
-// restored session as "custom" rather than failing.
+// restored session as "custom" rather than failing. Auto is Claude's own classifier, not a dsh
+// grant: it runs on the default workspace-write shield, so a restored Auto transcript must not
+// seed Full access and silently widen the shield it came from.
 const PRESET_FOR_MODE = new Map([
   ["plan", { preset: "read-only", approval: "ask" }],
   ["default", { preset: "workspace-write", approval: "ask" }],
   ["acceptEdits", { preset: "workspace-write", approval: "ask" }],
-  ["auto", { preset: "danger-full-access", approval: "never" }],
+  ["auto", { preset: "workspace-write", approval: "ask" }],
   ["dontAsk", { preset: "danger-full-access", approval: "never" }],
   ["bypassPermissions", { preset: "danger-full-access", approval: "never" }],
 ]);

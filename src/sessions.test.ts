@@ -2229,6 +2229,7 @@ console.log("sessions ok");
           override: null,
           accessMode: null,
           ceiling: "default",
+          defaultMode: "default",
           allowed: ["default"],
           liveMode: null,
           modes: ["default"],

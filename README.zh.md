@@ -160,7 +160,7 @@ dsh 只发布预发行版，客户端 API 也会在版本之间变动，所以�
 设置分两类。设置 → Oh My Claude 下和面板调校标签里的开关立即生效，并保存在本机，所以每个浏览器看到的都一样。下面这些键在安装时配置：写在 profile 的 `cordis.patch.yml` 中该 bundle 行的 `config:` 下，dsh 下次加载插件时生效，重启 dsh 即可。dsh 自己的插件页面会列出这个插件并提供开关，但没有这些键的表单。最常改的三个键：
 
 ```yaml
-permissionMode: dsh      # 跟随会话的盾牌（默认），或固定为 CLI 的六种模式之一
+permissionMode: auto     # 新会话默认用 Claude 自己的分类器；dsh 跟随盾牌，或固定为 CLI 的六种模式之一
 spawn: keeper            # Claude 在 dsh 重启后继续运行（默认）；node 或 dsh 则作为普通子进程
 sshHost: ""              # "[user@]host" 通过 ssh 驱动另一台机器上的 claude
 ```

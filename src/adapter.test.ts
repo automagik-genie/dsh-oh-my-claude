@@ -189,7 +189,7 @@ declare module "./adapter.js" {
 }
 
 const config = new Config({});
-assert.equal(config.permissionMode, "dsh");
+assert.equal(config.permissionMode, "auto");
 assert.deepEqual(config.allowedTools, []);
 assert.equal(config.titleModel, "haiku");
 assert.equal(config.resume, true);
@@ -488,7 +488,7 @@ assert.ok(
   chat.join(" ").includes("--permission-prompt-tool stdio") &&
     chat.join(" ").includes("--tools default"),
 );
-assert.ok(chat.join(" ").includes("--permission-mode acceptEdits"));
+assert.ok(chat.join(" ").includes("--permission-mode auto"));
 // Permission mode override is passed through to args
 const override = buildArgs({
   model: "m",
@@ -1082,24 +1082,37 @@ assert.equal(
   assert.equal(approvalsDisabled([never, { role: "user", content: "hi" }]), true);
   assert.equal(approvalsDisabled([never, policy("workspace-write")]), false);
 }
-assert.equal(permissionModeFor(config, "read-only"), "plan");
-assert.equal(permissionModeFor(config, "workspace-write"), "acceptEdits");
-assert.equal(permissionModeFor(config, "danger-full-access"), "bypassPermissions");
-assert.equal(permissionModeFor(config, undefined), "acceptEdits");
+// The access-profile mapping is pinned: an explicit 'dsh' still follows the shield.
+const dshConfig = new Config({ permissionMode: "dsh" });
+assert.equal(permissionModeFor(dshConfig, "read-only"), "plan");
+assert.equal(permissionModeFor(dshConfig, "workspace-write"), "acceptEdits");
+assert.equal(permissionModeFor(dshConfig, "danger-full-access"), "bypassPermissions");
+assert.equal(permissionModeFor(dshConfig, undefined), "acceptEdits");
 assert.equal(
   permissionModeFor(new Config({ permissionMode: "plan" }), "danger-full-access"),
   "plan",
 );
+// The unconfigured default is Auto, neither the shield's mapping nor one of Auto's neighbours.
+assert.equal(permissionModeFor(config, "workspace-write"), "auto");
+assert.equal(permissionModeFor(config, "danger-full-access"), "auto");
+assert.equal(permissionModeFor(config, undefined), "auto");
 const switched = buildArgs({
+  model: "m",
+  config: dshConfig,
+  accessMode: "danger-full-access",
+} as any);
+assert.ok(switched.join(" ").includes("--permission-mode bypassPermissions"));
+const switchedDefault = buildArgs({
   model: "m",
   config,
   accessMode: "danger-full-access",
 } as any);
-assert.ok(switched.join(" ").includes("--permission-mode bypassPermissions"));
+assert.ok(switchedDefault.join(" ").includes("--permission-mode auto"));
 
-// Ceiling: permissionModeInfo reports allowed modes; setPermissionMode rejects loosening
+// Ceiling: permissionModeInfo reports allowed modes; setPermissionMode rejects loosening. A pinned
+// 'dsh' config keeps the pre-Auto access-profile ceiling this block has always exercised.
 {
-  const a = new ClaudeCodeAdapter(fakeCtx({ on() {} }), Config({}));
+  const a = new ClaudeCodeAdapter(fakeCtx({ on() {} }), new Config({ permissionMode: "dsh" }));
   a.accessModes.set("s", "read-only");
   const infoRo = a.permissionModeInfo("s");
   assert.equal(infoRo.accessMode, "read-only");

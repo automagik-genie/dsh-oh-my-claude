@@ -107,9 +107,7 @@ import {
   loadTurnRecords,
   saveLimitWait,
   markBusy,
-  modesUpTo,
   noteBoot,
-  PERMISSION_MODES,
   loadCommandCatalog,
   rememberStarted,
   resolveClaudeHome,
@@ -274,13 +272,16 @@ import {
   BRIDGE_PREFIX,
   buildArgs,
   buildInput,
+  clampedPermissionMode,
   CLIENT_COMMANDS,
+  defaultPermissionMode,
   denyCliFlag,
   dshToolsGuidance,
   mcpToolsByServer,
   modeForAccess,
+  modesForCeiling,
   NATIVE_TOOL_MAP,
-  permissionModeFor,
+  permissionCeiling,
   probeCli,
   renameTitle,
   rowsSupported,
@@ -892,15 +893,13 @@ export class ClaudeCodeAdapter extends LlmAdapter {
     const override = this.permissionModes.get(sessionId);
     if (override !== undefined && override !== null) {
       // An override that is no longer allowed under the current ceiling must not win.
-      const ceiling = permissionModeFor(this.config, accessMode);
-      // SAFETY: permissionModeFor returns a known PermissionMode value from its mapping table.
-      const allowed = isPermissionMode(ceiling)
-        ? modesUpTo(ceiling as PermissionMode)
-        : PERMISSION_MODES;
+      const ceiling = permissionCeiling(this.config, accessMode);
+      const allowed = modesForCeiling(ceiling);
       // SAFETY: override came from the adapter's own permissionModes map which only stores valid modes.
       if (allowed.includes(override as PermissionMode)) return override;
+      return clampedPermissionMode(this.config, accessMode);
     }
-    return permissionModeFor(this.config, accessMode);
+    return defaultPermissionMode(this.config, accessMode);
   }
 
   /** The working directory a session runs in, read from its header, or undefined when the session is unknown or its header throws (a detached session cannot be read). */
@@ -1174,7 +1173,7 @@ export class ClaudeCodeAdapter extends LlmAdapter {
       cwd,
       model,
       effort: options.reasoningEffort ?? null,
-      mode: effectivePermissionMode ?? permissionModeFor(this.config, accessMode),
+      mode: effectivePermissionMode ?? defaultPermissionMode(this.config, accessMode),
       sessionId: session?.id ?? null,
       temporary,
     };
@@ -1483,16 +1482,18 @@ export class ClaudeCodeAdapter extends LlmAdapter {
   permissionModeInfo(sessionId: string): PermissionModeInfo {
     const override = this.permissionModes.get(sessionId) ?? null;
     const accessMode = this.currentAccessMode(sessionId);
-    // The shield's mapping is the ceiling; before the first prompt names an access mode the
-    // config's own default applies, never the loosest mode.
-    const ceiling = permissionModeFor(this.config, accessMode ?? undefined);
-    const allowed = isPermissionMode(ceiling) ? modesUpTo(ceiling) : PERMISSION_MODES;
+    // The ceiling comes from permissionCeiling: dsh's mapping under a pinned mode, and under the
+    // Auto default the shield's own answer (Auto on workspace-write, Plan on read-only). Before the
+    // first prompt names an access mode the config's own default applies, never the loosest mode.
+    const ceiling = permissionCeiling(this.config, accessMode ?? undefined);
+    const allowed = modesForCeiling(ceiling);
     const proc = this.processes.get(registryKey(this.providerId, sessionId));
     return {
       mode: this.getPermissionMode(sessionId, accessMode ?? undefined),
       override,
       accessMode,
       ceiling,
+      defaultMode: defaultPermissionMode(this.config, accessMode ?? undefined),
       allowed,
       liveMode: proc?.alive ? proc.liveMode : null,
     };
