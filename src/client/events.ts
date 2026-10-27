@@ -110,6 +110,9 @@ export interface PermissionModeState {
   modes: string[];
   accessMode: string | null;
   ceiling: string;
+  /** The mode the session resolves to with no stored override, so a pick equal to it is what
+   *  clearing the override would give. */
+  defaultMode: string;
   /** The mode the running process is in; null without a process. Differs from `mode` after a pick
    *  the CLI could not take live, until the next turn respawns. */
   liveMode?: string | null;

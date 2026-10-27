@@ -1,6 +1,7 @@
 import { type GenerateOptions } from "@deepseek-ai/dsh-llm";
 import type { JsonValue, ToolSchema } from "../dsh.js";
 import { type RowsSupport } from "../rows-probe.js";
+import { type PermissionMode } from "../state.js";
 import { Config } from "./config.js";
 import { type LooseMessage } from "./prompt.js";
 /** Claude permission mode for a dsh access mode, or undefined for one this table does not know. */
@@ -12,6 +13,32 @@ export declare function accessModeOf(messages: LooseMessage[] | undefined): stri
 export declare function approvalsDisabled(messages: LooseMessage[] | undefined): boolean;
 /** The CLI's permission mode for a turn: the configured one, or the one dsh's access mode maps to. */
 export declare function permissionModeFor(config: Schemastery.TypeT<typeof Config>, accessMode: string | undefined): string;
+/**
+ * The mode a session with no saved override spawns in. The plugin defaults to Auto; a pinned
+ * `permissionMode` resolves as before, and `dsh` keeps the access-profile mapping above. Auto is a
+ * default, not a grant: a Read Only shield still caps the session at Plan.
+ */
+export declare function defaultPermissionMode(config: Schemastery.TypeT<typeof Config>, accessMode: string | undefined): string;
+/**
+ * The mode a saved override falls back to when its shield no longer allows it. Under the Auto
+ * default that is the shield's own mapping, never looser than the mode the session would start in:
+ * a restored Bypass transcript under a workspace-write shield stays on Accept edits. A pinned
+ * `permissionMode` keeps its own fallback, so a non-default config is not tightened by this path.
+ */
+export declare function clampedPermissionMode(config: Schemastery.TypeT<typeof Config>, accessMode: string | undefined): string;
+/**
+ * The loosest mode a session may pick now: dsh's access profile decides, except that Auto — the
+ * plugin's default — stays reachable on the default workspace-write shield, so a new session can
+ * actually run the mode it starts in. Read Only still caps at Plan, and Full access keeps Bypass
+ * reachable for an explicit saved choice.
+ */
+export declare function permissionCeiling(config: Schemastery.TypeT<typeof Config>, accessMode: string | undefined): string;
+/**
+ * The modes a session may pick under `ceiling`. Auto and Don't ask share a rank, but only Auto is
+ * the plugin default: Don't ask stays a Full access mode, so an Auto ceiling admits Auto without
+ * admitting Don't ask. Unknown ceilings keep the whole list, as before.
+ */
+export declare function modesForCeiling(ceiling: string): readonly PermissionMode[];
 /** Probe whether this target supports raw tool rows once and cache the answer, so repeated callers share one ssh probe instead of one per session. */
 export declare const rowsSupported: () => Promise<RowsSupport>;
 /** Forget what was probed on `host` ("" for this box): after `claude update` there, the flag set

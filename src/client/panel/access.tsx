@@ -16,6 +16,7 @@ import {
 } from "../icons.js";
 import type { FeatureSwitches } from "../../switches.js";
 import type { PermissionRules, HooksListing } from "../../process.js";
+import { clearsOverride, isCurrentMode } from "./mode-pick.js";
 
 /** The mode to show for a session: the process's own when one runs, else the one the next spawn gets. */
 const shownMode = (snap: PermissionModeState): string => snap.liveMode ?? snap.mode;
@@ -353,6 +354,9 @@ export function AccessShield({ sessionId, ctx }: { sessionId: string; ctx: Clien
               });
             });
             const pick = (snap: PermissionModeState) => {
+              // The checked row only confirms where the session already is; rewriting the shield
+              // here promoted a default Auto session's workspace-write access to Full access.
+              if (isCurrentMode(m, snap)) return;
               const need = presetForMode(m);
               const have = snap.accessMode;
               // The label takes the pick at once. What follows is a dsh command, a settle and two
@@ -367,10 +371,7 @@ export function AccessShield({ sessionId, ctx }: { sessionId: string; ctx: Clien
                 reapplyLabel();
               };
               const doSet = () => {
-                const clearDefault =
-                  (need === "read-only" && m === "plan") ||
-                  (need === "workspace-write" && m === "acceptEdits") ||
-                  (need === "danger-full-access" && m === "bypassPermissions");
+                const clearDefault = clearsOverride(m, snap);
                 fetch(`${ROUTE}/permission-mode`, {
                   method: "PUT",
                   headers: { "content-type": "application/json" },
@@ -675,15 +676,15 @@ export function AccessTrigger({ sessionId, ctx }: { sessionId: string; ctx: Clie
     setOpen(false);
     fetchModeState(sessionId).then((snap) => {
       if (!snap) return; // nothing to compare against; leave the current mode as is
+      // The checked row only confirms where the session already is; rewriting the shield here
+      // promoted a default Auto session's workspace-write access to Full access.
+      if (isCurrentMode(m, snap)) return;
       const wasMode = mode;
       setMode(m); // optimistic, like the shield's reapplyLabel
       const revert = () => setMode(wasMode);
       const need = presetForMode(m);
       const settle = () => {
-        const clearDefault =
-          (need === "read-only" && m === "plan") ||
-          (need === "workspace-write" && m === "acceptEdits") ||
-          (need === "danger-full-access" && m === "bypassPermissions");
+        const clearDefault = clearsOverride(m, snap);
         fetch(`${ROUTE}/permission-mode`, {
           method: "PUT",
           headers: { "content-type": "application/json" },

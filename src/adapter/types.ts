@@ -202,8 +202,11 @@ export interface PermissionModeInfo {
   override: string | null;
   /** The session's dsh access mode as last seen, or null when unknown. */
   accessMode: string | null;
-  /** The Claude permission mode that maps from the access mode, via `permissionModeFor`. */
+  /** The loosest Claude permission mode the session may use now, via `permissionCeiling`. */
   ceiling: string;
+  /** The mode the session resolves to with no stored override, via `defaultPermissionMode`. A
+   *  client pick equal to this one is what clearing the override would give. */
+  defaultMode: string;
   /** Permission modes the client may pick (at or below the ceiling). */
   allowed: readonly string[];
   /** The mode the session's running Claude process is in, or null when no process is alive. It

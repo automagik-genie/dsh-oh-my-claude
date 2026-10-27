@@ -6,6 +6,7 @@ import type { JsonValue, ToolSchema } from "../dsh.js";
 import { KEY_HEADER } from "../mcp-config.js";
 import { shq, sshArgs, userTurnLine } from "../process.js";
 import { probeRawToolRows, type RowsSupport } from "../rows-probe.js";
+import { isPermissionMode, modesUpTo, PERMISSION_MODES, type PermissionMode } from "../state.js";
 import { Config } from "./config.js";
 import { textOf, type LooseMessage } from "./prompt.js";
 
@@ -52,6 +53,65 @@ export function permissionModeFor(
 ): string {
   if (config.permissionMode !== "dsh") return config.permissionMode;
   return modeForAccess(accessMode ?? "") ?? "acceptEdits";
+}
+
+/**
+ * The mode a session with no saved override spawns in. The plugin defaults to Auto; a pinned
+ * `permissionMode` resolves as before, and `dsh` keeps the access-profile mapping above. Auto is a
+ * default, not a grant: a Read Only shield still caps the session at Plan.
+ */
+export function defaultPermissionMode(
+  config: Schemastery.TypeT<typeof Config>,
+  accessMode: string | undefined,
+): string {
+  const mode = permissionModeFor(config, accessMode);
+  if (config.permissionMode !== "auto" || !isPermissionMode(mode)) return mode;
+  const ceiling = permissionCeiling(config, accessMode);
+  if (!isPermissionMode(ceiling)) return mode;
+  return modesUpTo(ceiling).includes(mode) ? mode : ceiling;
+}
+
+/**
+ * The mode a saved override falls back to when its shield no longer allows it. Under the Auto
+ * default that is the shield's own mapping, never looser than the mode the session would start in:
+ * a restored Bypass transcript under a workspace-write shield stays on Accept edits. A pinned
+ * `permissionMode` keeps its own fallback, so a non-default config is not tightened by this path.
+ */
+export function clampedPermissionMode(
+  config: Schemastery.TypeT<typeof Config>,
+  accessMode: string | undefined,
+): string {
+  const base = defaultPermissionMode(config, accessMode);
+  if (config.permissionMode !== "auto") return base;
+  const mapped = modeForAccess(accessMode ?? "");
+  if (mapped === undefined || !isPermissionMode(mapped) || !isPermissionMode(base)) return base;
+  return modesUpTo(mapped).includes(base) ? base : mapped;
+}
+
+/**
+ * The loosest mode a session may pick now: dsh's access profile decides, except that Auto — the
+ * plugin's default — stays reachable on the default workspace-write shield, so a new session can
+ * actually run the mode it starts in. Read Only still caps at Plan, and Full access keeps Bypass
+ * reachable for an explicit saved choice.
+ */
+export function permissionCeiling(
+  config: Schemastery.TypeT<typeof Config>,
+  accessMode: string | undefined,
+): string {
+  if (config.permissionMode !== "auto") return permissionModeFor(config, accessMode);
+  const mapped = modeForAccess(accessMode ?? "");
+  return mapped === "plan" || mapped === "bypassPermissions" ? mapped : "auto";
+}
+
+/**
+ * The modes a session may pick under `ceiling`. Auto and Don't ask share a rank, but only Auto is
+ * the plugin default: Don't ask stays a Full access mode, so an Auto ceiling admits Auto without
+ * admitting Don't ask. Unknown ceilings keep the whole list, as before.
+ */
+export function modesForCeiling(ceiling: string): readonly PermissionMode[] {
+  if (!isPermissionMode(ceiling)) return PERMISSION_MODES;
+  if (ceiling !== "auto") return modesUpTo(ceiling);
+  return PERMISSION_MODES.filter((m) => m === "auto" || modesUpTo("acceptEdits").includes(m));
 }
 
 // ---------------------------------------------------------------------------
@@ -320,7 +380,7 @@ export function buildArgs({
   if (temporary && supports(flags, "--no-session-persistence"))
     args.push("--no-session-persistence");
   if (supports(flags, "--permission-mode")) {
-    const mode = permissionMode ?? permissionModeFor(config, accessMode);
+    const mode = permissionMode ?? defaultPermissionMode(config, accessMode);
     args.push("--permission-mode", mode);
   }
   if (config.approvals && usesStdin(flags) && supports(flags, "--permission-prompt-tool")) {

@@ -6,6 +6,10 @@ Versions from 1.0.0 up are on npm. Everything below 1.0.0 was released from the 
 
 ## [Unreleased]
 
+### Changed
+
+- A new session with no saved permission mode starts in Claude's Auto mode instead of following dsh's shield mapping to Accept edits. `permissionMode` now defaults to `auto`; a session that already saved a mode keeps it, `permissionMode: dsh` still follows the shield (Read Only → Plan, Workspace Write → Accept edits, Full access → Bypass), and a Read Only shield still starts the session in Plan. Picking a mode other than the one the session would start in now stores it as an explicit choice: Accept edits and Bypass are no longer cleared back to the new default, and re-picking the checked row no longer switches dsh's shield.
+
 ## [1.5.6] - 2026-10-23
 
 dsh: runs on 0.2.0-rc.1 through 0.2.1-rc.3; built and tested on 0.2.1-rc.3.

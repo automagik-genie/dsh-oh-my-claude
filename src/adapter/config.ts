@@ -121,9 +121,9 @@ export const Config = z.object({
     ),
   permissionMode: z
     .union(["dsh", "acceptEdits", "bypassPermissions", "plan", "dontAsk", "auto", "manual"])
-    .default("dsh")
+    .default("auto")
     .description(
-      "Claude Code permission mode for tools the child runs on its own. 'dsh' follows the session's access mode switch: read-only → plan, workspace-write → acceptEdits, danger-full-access → bypassPermissions",
+      "Claude Code permission mode for tools the child runs on its own. 'auto' (default) runs Claude's own classifier for a session with no saved mode; a Read Only shield still caps it at plan. 'dsh' follows the session's access mode switch: read-only → plan, workspace-write → acceptEdits, danger-full-access → bypassPermissions",
     ),
   allowedTools: z.array(z.string()).default([]).description("Extra --allowedTools entries"),
   disallowedTools: z.array(z.string()).default([]).description("--disallowedTools entries"),

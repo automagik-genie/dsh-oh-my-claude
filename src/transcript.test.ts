@@ -998,6 +998,16 @@ console.log("transcript ok");
     [],
     "no model and an unknown mode write nothing",
   );
+  // Auto is Claude's classifier, not a dsh grant: a reseed must not restore it as Full access.
+  assert.deepEqual(
+    settingsEvents({ provider: "claude-code", model: undefined, permissionMode: "auto" }, 1, 0),
+    [
+      { type: "permission/preset", seq: 0, time: 1, data: { preset: "workspace-write" } },
+      { type: "sandbox/mode", seq: 1, time: 1, data: { mode: "workspace-write" } },
+      { type: "approval/policy", seq: 2, time: 1, data: { policy: "ask" } },
+    ],
+    "auto restores the default workspace shield, not full access",
+  );
   assert.equal(
     settingsEvents({ provider: undefined, model: "x", permissionMode: "plan" }, 1, 0)[0]?.data
       .preset,
